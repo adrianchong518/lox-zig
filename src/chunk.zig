@@ -4,10 +4,17 @@ const ArrayList = std.ArrayList;
 
 const Value = @import("value.zig").Value;
 
-pub const OpCode = enum(u8) {
+pub const OpCodeLabel = enum(u8) {
     ret,
     constant,
+    constant_long,
     _,
+};
+
+pub const OpCode = union(OpCodeLabel) {
+    ret: void,
+    constant: struct { offset: u8 },
+    constant_long: struct { offset: u24 },
 };
 
 pub const Chunk = struct {
@@ -48,6 +55,37 @@ pub const Chunk = struct {
 
     pub fn writeOpCode(self: *Chunk, op_code: OpCode, line: usize) Allocator.Error!void {
         try self.write(@enumToInt(op_code), line);
+
+        switch (op_code) {
+            .constant => |op| try self.write(op.offset, line),
+
+            .constant_long => |op| {
+                try self.write(@truncate(u8, op.offset), line);
+                try self.write(@truncate(u8, op.offset >> 8), line);
+                try self.write(@truncate(u8, op.offset >> 16), line);
+            },
+
+            else => {},
+        }
+    }
+
+    pub fn writeConstant(self: *Chunk, value: Value, line: usize) Allocator.Error!void {
+        const offset = try self.addConstant(value);
+
+        if (offset <= 0xff) {
+            try self.writeOpCode(.{
+                .constant = .{ .offset = @intCast(u8, offset) },
+            }, line);
+        } else if (offset <= 0xff_ff_ff) {
+            try self.writeOpCode(.{
+                .constant_long = .{ .offset = @intCast(u24, offset) },
+            }, line);
+        } else {
+            std.debug.panic(
+                "there are more than 2^24 constants, which is not supported",
+                .{},
+            );
+        }
     }
 
     pub fn addConstant(self: *Chunk, value: Value) Allocator.Error!usize {

@@ -15,11 +15,11 @@ pub fn main() !void {
     var chunk = Chunk.init(allocator);
     defer chunk.deinit();
 
-    const constant_offset = try chunk.addConstant(1.2);
-    try chunk.writeOpCode(.constant, 123);
-    try chunk.write(@intCast(u8, constant_offset), 123);
+    for (0..0x101) |i| {
+        try chunk.writeConstant(@intToFloat(f64, i), i);
+    }
 
-    try chunk.writeOpCode(.ret, 123);
+    try chunk.writeOpCode(.ret, 2000);
 
     debug.disassemble(&chunk, "test chunk");
 }
