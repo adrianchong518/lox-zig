@@ -16,12 +16,13 @@ pub fn disassemble(chunk: *const Chunk, name: []const u8) void {
 fn disassembleInstruction(chunk: *const Chunk, offset: usize) usize {
     std.debug.print("{:0>4} ", .{offset});
 
+    const line = chunk.getLine(offset);
     if (offset > 0 and
-        chunk.lines.items[offset] == chunk.lines.items[offset - 1])
+        line == chunk.getLine(offset - 1))
     {
         std.debug.print("   | ", .{});
     } else {
-        std.debug.print("{: >4} ", .{chunk.lines.items[offset]});
+        std.debug.print("{: >4} ", .{line});
     }
 
     const instruction = chunk.code.items[offset];
