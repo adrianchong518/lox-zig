@@ -1,24 +1,25 @@
 const std = @import("std");
 
+const debug = @import("debug.zig");
+const Chunk = @import("chunk.zig").Chunk;
+const OpCode = @import("chunk.zig").OpCode;
+
 pub fn main() !void {
-    // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
 
-    // stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    const stdout_file = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout = bw.writer();
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
 
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
+    var chunk = Chunk.init(allocator);
+    defer chunk.deinit();
 
-    try bw.flush(); // don't forget to flush!
-}
+    const constant_offset = try chunk.addConstant(1.2);
+    try chunk.writeOpCode(.constant, 123);
+    try chunk.write(@intCast(u8, constant_offset), 123);
 
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
+    try chunk.writeOpCode(.ret, 123);
+
+    debug.disassemble(&chunk, "test chunk");
 }
