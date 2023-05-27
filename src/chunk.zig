@@ -5,7 +5,7 @@ const ArrayList = std.ArrayList;
 const Value = @import("value.zig").Value;
 
 pub const OpCodeLabel = enum(u8) {
-    ret,
+    @"return",
 
     constant,
     constant_long,
@@ -19,7 +19,7 @@ pub const OpCodeLabel = enum(u8) {
 };
 
 pub const OpCode = union(OpCodeLabel) {
-    ret,
+    @"return",
 
     constant: struct { offset: u8 },
     constant_long: struct { offset: u24 },
@@ -70,7 +70,7 @@ pub const Chunk = struct {
     pub fn nextOpCode(self: *const Chunk, offset: *usize) ?OpCode {
         const instruction = self.next(offset);
         switch (@intToEnum(OpCodeLabel, instruction)) {
-            .ret => return .ret,
+            .@"return" => return .@"return",
 
             .constant => return .{ .constant = .{ .offset = self.next(offset) } },
             .constant_long => return .{ .constant_long = .{
@@ -114,7 +114,7 @@ pub const Chunk = struct {
                 try self.write(@truncate(u8, op.offset >> 16), line);
             },
 
-            .ret, .negate, .add, .subtract, .multiply, .divide => {},
+            .@"return", .negate, .add, .subtract, .multiply, .divide => {},
         }
     }
 

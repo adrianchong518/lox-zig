@@ -21,28 +21,28 @@ pub fn disassembleInstruction(chunk: *const Chunk, offset: usize) usize {
     if (offset > 0 and
         line == chunk.getLine(offset - 1))
     {
-        std.debug.print("   | ", .{});
+        std.debug.print("     | ", .{});
     } else {
-        std.debug.print("{: >4} ", .{line});
+        std.debug.print("{: >4} | ", .{line});
     }
 
     var new_offset = offset;
-    const instruction = chunk.nextOpCode(&new_offset);
-    if (instruction) |inst| {
-        switch (inst) {
-            .ret => printSimple("OP_RETURN"),
-
-            .constant => |op| printConstant("OP_CONSTANT", chunk, op.offset),
-            .constant_long => |op| printConstant("OP_CONSTANT_LONG", chunk, op.offset),
-
-            .negate => printSimple("OP_NEGATE"),
-            .add => printSimple("OP_ADD"),
-            .subtract => printSimple("OP_SUBTRACT"),
-            .multiply => printSimple("OP_MULTIPLY"),
-            .divide => printSimple("OP_DIVIDE"),
-        }
-    } else {
+    const instruction = chunk.nextOpCode(&new_offset) orelse {
         std.debug.print("Unknown opcode: {0} (0x{0x})\n", .{chunk.read(offset)});
+        return new_offset;
+    };
+
+    switch (instruction) {
+        .@"return" => printSimple("OP_RETURN"),
+
+        .constant => |op| printConstant("OP_CONSTANT", chunk, op.offset),
+        .constant_long => |op| printConstant("OP_CONSTANT_LONG", chunk, op.offset),
+
+        .negate => printSimple("OP_NEGATE"),
+        .add => printSimple("OP_ADD"),
+        .subtract => printSimple("OP_SUBTRACT"),
+        .multiply => printSimple("OP_MULTIPLY"),
+        .divide => printSimple("OP_DIVIDE"),
     }
 
     return new_offset;

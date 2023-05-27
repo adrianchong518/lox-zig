@@ -1,6 +1,7 @@
 const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
+const File = std.fs.File;
 
 const config = @import("config");
 
@@ -17,11 +18,21 @@ pub const Vm = struct {
     ip: usize,
     stack: FixedCapacityStack(Value),
 
-    pub fn init(allocator: Allocator, chunk: *Chunk) Allocator.Error!Vm {
+    outWriter: File.Writer,
+    errWriter: File.Writer,
+
+    pub fn init(
+        allocator: Allocator,
+        outWriter: File.Writer,
+        errWriter: File.Writer,
+    ) Allocator.Error!Vm {
         return .{
-            .chunk = chunk,
+            .chunk = undefined,
             .ip = 0,
             .stack = try FixedCapacityStack(Value).init(allocator, stack_max),
+
+            .outWriter = outWriter,
+            .errWriter = errWriter,
         };
     }
 
@@ -29,7 +40,12 @@ pub const Vm = struct {
         self.stack.deinit();
     }
 
-    pub fn run(self: *Vm) !void {
+    pub fn interpret(self: *Vm, chunk: *Chunk) !void {
+        self.chunk = chunk;
+        try self.run();
+    }
+
+    fn run(self: *Vm) void {
         while (self.ip < self.chunk.code.items.len) {
             if (config.trace_exec) {
                 std.debug.print("          {any}\n", .{self.stack.items()});
@@ -38,17 +54,17 @@ pub const Vm = struct {
 
             const instruction = self.chunk.nextOpCode(&self.ip);
             if (instruction) |inst| {
-                try self.runInstruction(inst);
+                self.runInstruction(inst);
             }
         }
     }
 
-    fn runInstruction(self: *Vm, instruction: OpCode) !void {
+    fn runInstruction(self: *Vm, instruction: OpCode) void {
         switch (instruction) {
             .ret => std.debug.print("{}\n", .{self.stack.pop()}),
 
-            .constant => |op| try self.runConstant(op.offset),
-            .constant_long => |op| try self.runConstant(op.offset),
+            .constant => |op| self.runConstant(op.offset),
+            .constant_long => |op| self.runConstant(op.offset),
 
             .negate => self.stack.push(.{ .value = -self.stack.pop().value }),
 
@@ -59,7 +75,7 @@ pub const Vm = struct {
         }
     }
 
-    fn runConstant(self: *Vm, constant_offset: usize) !void {
+    fn runConstant(self: *Vm, constant_offset: usize) void {
         self.stack.push(self.chunk.constants.items[constant_offset]);
     }
 
