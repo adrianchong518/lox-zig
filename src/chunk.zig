@@ -6,26 +6,40 @@ const Value = @import("value.zig").Value;
 
 pub const OpCodeLabel = enum(u8) {
     ret,
+
     constant,
     constant_long,
+
+    negate,
+    add,
+    subtract,
+    multiply,
+    divide,
     _,
 };
 
 pub const OpCode = union(OpCodeLabel) {
-    ret: void,
+    ret,
+
     constant: struct { offset: u8 },
     constant_long: struct { offset: u24 },
+
+    negate,
+    add,
+    subtract,
+    multiply,
+    divide,
 };
 
 pub const Chunk = struct {
-    code: ArrayList(u8),
-    lines: ArrayList(LineStart),
-    constants: ArrayList(Value),
-
     const LineStart = struct {
         offset: usize,
         line: usize,
     };
+
+    code: ArrayList(u8),
+    lines: ArrayList(LineStart),
+    constants: ArrayList(Value),
 
     pub fn init(allocator: Allocator) Chunk {
         return .{
@@ -39,6 +53,41 @@ pub const Chunk = struct {
         self.code.deinit();
         self.lines.deinit();
         self.constants.deinit();
+    }
+
+    pub fn read(self: *const Chunk, offset: usize) u8 {
+        return self.code.items[offset];
+    }
+
+    fn next(self: *const Chunk, offset: *usize) u8 {
+        const byte = self.read(offset.*);
+        offset.* += 1;
+        return byte;
+    }
+
+    /// Returns the corresponding `OpCode` at `code.items[offset]`, and mutates `offset` to be the
+    /// start of the next instruction
+    pub fn nextOpCode(self: *const Chunk, offset: *usize) ?OpCode {
+        const instruction = self.next(offset);
+        switch (@intToEnum(OpCodeLabel, instruction)) {
+            .ret => return .ret,
+
+            .constant => return .{ .constant = .{ .offset = self.next(offset) } },
+            .constant_long => return .{ .constant_long = .{
+                .offset = self.next(offset) |
+                    (@as(u24, self.next(offset)) << 8) |
+                    (@as(u24, self.next(offset)) << 16),
+            } },
+
+            .negate => return .negate,
+
+            .add => return .add,
+            .subtract => return .subtract,
+            .multiply => return .multiply,
+            .divide => return .divide,
+
+            _ => return null,
+        }
     }
 
     pub fn write(self: *Chunk, byte: u8, line: usize) Allocator.Error!void {
@@ -65,11 +114,11 @@ pub const Chunk = struct {
                 try self.write(@truncate(u8, op.offset >> 16), line);
             },
 
-            else => {},
+            .ret, .negate, .add, .subtract, .multiply, .divide => {},
         }
     }
 
-    pub fn writeConstant(self: *Chunk, value: Value, line: usize) Allocator.Error!void {
+    pub fn writeConstant(self: *Chunk, value: anytype, line: usize) Allocator.Error!void {
         const offset = try self.addConstant(value);
 
         if (offset <= 0xff) {
@@ -88,8 +137,8 @@ pub const Chunk = struct {
         }
     }
 
-    pub fn addConstant(self: *Chunk, value: Value) Allocator.Error!usize {
-        try self.constants.append(value);
+    fn addConstant(self: *Chunk, value: anytype) Allocator.Error!usize {
+        try self.constants.append(Value.from(value));
         return self.constants.items.len - 1;
     }
 

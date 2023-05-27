@@ -15,6 +15,11 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
+    const trace_exec = b.option(bool, "trace-exec", "trace the execution of vm") orelse false;
+
+    const config = b.addOptions();
+    config.addOption(bool, "trace_exec", trace_exec);
+
     const exe = b.addExecutable(.{
         .name = "lox-zig",
         // In this case the main source file is merely a path, however, in more
@@ -23,6 +28,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    exe.addOptions("config", config);
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
@@ -59,6 +66,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    unit_tests.addOptions("config", config);
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
 
