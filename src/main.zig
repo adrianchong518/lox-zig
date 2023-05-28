@@ -84,7 +84,7 @@ fn interpret(allocator: Allocator, source: []const u8, vm: *Vm) InterpretError!v
     var chunk = Chunk.init(allocator);
     defer chunk.deinit();
 
-    try compiler.compile(source, &chunk);
+    try compiler.compile(source, vm, &chunk);
     try vm.interpret(&chunk);
 }
 

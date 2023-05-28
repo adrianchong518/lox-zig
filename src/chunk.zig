@@ -51,6 +51,10 @@ pub const OpCode = union(OpCodeTag) {
 };
 
 pub const Chunk = struct {
+    code: ArrayList(u8),
+    lines: ArrayList(LineStart),
+    constants: ArrayList(Value),
+
     pub const ConstantsError = error{
         TooManyConstants,
     };
@@ -61,10 +65,6 @@ pub const Chunk = struct {
         offset: usize,
         line: usize,
     };
-
-    code: ArrayList(u8),
-    lines: ArrayList(LineStart),
-    constants: ArrayList(Value),
 
     pub fn init(allocator: Allocator) Chunk {
         return .{

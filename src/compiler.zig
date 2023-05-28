@@ -13,10 +13,12 @@ const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
 const Scanner = @import("scanner.zig").Scanner;
 const Token = @import("scanner.zig").Token;
+const Object = @import("Object.zig");
+const Vm = @import("vm.zig").Vm;
 
-pub fn compile(source: []const u8, chunk: *Chunk) InterpretError!void {
+pub fn compile(source: []const u8, vm: *Vm, chunk: *Chunk) InterpretError!void {
     var scanner = Scanner.init(source);
-    var parser = Parser.init(&scanner, chunk);
+    var parser = Parser.init(vm, &scanner, chunk);
 
     _ = ParseRule.get(.number);
 
@@ -65,6 +67,10 @@ const Precedence = enum {
 const ParseFn = *const fn (*Parser) InterpretError!void;
 
 const ParseRule = struct {
+    prefix: ?ParseFn,
+    infix: ?ParseFn,
+    precedence: Precedence,
+
     const rules = rules: {
         var r = EnumArray(Token.Type, ParseRule).initUndefined();
 
@@ -90,7 +96,7 @@ const ParseRule = struct {
         r.set(.less_equal, .{ .prefix = null, .infix = Parser.binary, .precedence = .comparison });
 
         r.set(.identifier, .{ .prefix = null, .infix = null, .precedence = .none });
-        r.set(.string, .{ .prefix = null, .infix = null, .precedence = .none });
+        r.set(.string, .{ .prefix = Parser.string, .infix = null, .precedence = .none });
         r.set(.number, .{ .prefix = Parser.number, .infix = null, .precedence = .none });
 
         r.set(.@"and", .{ .prefix = null, .infix = null, .precedence = .none });
@@ -115,16 +121,14 @@ const ParseRule = struct {
         break :rules r;
     };
 
-    prefix: ?ParseFn,
-    infix: ?ParseFn,
-    precedence: Precedence,
-
     fn get(typ: Token.Type) ParseRule {
         return rules.get(typ);
     }
 };
 
 const Parser = struct {
+    vm: *Vm,
+
     scanner: *Scanner,
     previous: Token,
     current: Token,
@@ -134,8 +138,10 @@ const Parser = struct {
     had_error: bool,
     panic_mode: bool,
 
-    fn init(scanner: *Scanner, compiling_chunk: *Chunk) Parser {
+    fn init(vm: *Vm, scanner: *Scanner, compiling_chunk: *Chunk) Parser {
         return .{
+            .vm = vm,
+
             .scanner = scanner,
             .previous = undefined,
             .current = undefined,
@@ -162,6 +168,12 @@ const Parser = struct {
     fn number(self: *Parser) InterpretError!void {
         const value = fmt.parseFloat(f64, self.previous.lexeme) catch unreachable;
         try self.emitConstant(value);
+    }
+
+    fn string(self: *Parser) InterpretError!void {
+        const bytes = self.previous.lexeme[1 .. self.previous.lexeme.len - 1];
+        const object = try Object.String.createCopy(self.vm, bytes);
+        try self.emitConstant(object);
     }
 
     fn unary(self: *Parser) InterpretError!void {

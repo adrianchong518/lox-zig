@@ -12,24 +12,37 @@ const FixedCapacityStack = @import("stack.zig").FixedCapacityStack;
 const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
 const Value = @import("value.zig").Value;
+const Object = @import("Object.zig");
 
 pub const Vm = struct {
-    const stack_max = 256;
+    allocator: Allocator,
 
     chunk: *Chunk,
     ip: usize,
     stack: FixedCapacityStack(Value),
+    objects: ?*Object,
+
+    const stack_max = 256;
 
     pub fn init(allocator: Allocator) Allocator.Error!Vm {
         return .{
+            .allocator = allocator,
             .chunk = undefined,
             .ip = 0,
             .stack = try FixedCapacityStack(Value).init(allocator, stack_max),
+            .objects = null,
         };
     }
 
     pub fn deinit(self: *Vm) void {
         self.stack.deinit();
+
+        var object = self.objects;
+        while (object) |obj| {
+            const next = obj.next;
+            obj.destroy(self);
+            object = next;
+        }
     }
 
     pub fn interpret(self: *Vm, chunk: *Chunk) InterpretError!void {
@@ -81,7 +94,26 @@ pub const Vm = struct {
                     },
                 }
             },
-            .add => try self.binaryOp(.@"+"),
+
+            .add => {
+                const b_value = self.stack.pop();
+                const a_value = self.stack.pop();
+
+                if (a_value.isString() and b_value.isString()) {
+                    const bytes = try mem.concat(self.allocator, u8, &[_][]const u8{
+                        a_value.object.asString().bytes,
+                        b_value.object.asString().bytes,
+                    });
+                    const object = try Object.String.create(self, bytes);
+                    self.stack.push(Value.from(object));
+                } else if (a_value == .number and b_value == .number) {
+                    self.stack.push(Value.from(a_value.number + b_value.number));
+                } else {
+                    try self.runtimeError("Operands must be either both numbers or strings.", .{});
+                    return error.RuntimePanic;
+                }
+            },
+
             .subtract => try self.binaryOp(.@"-"),
             .multiply => try self.binaryOp(.@"*"),
             .divide => try self.binaryOp(.@"/"),
