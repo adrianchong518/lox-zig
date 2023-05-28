@@ -32,6 +32,12 @@ pub const OpCode = union(OpCodeLabel) {
 };
 
 pub const Chunk = struct {
+    pub const ConstantsError = error{
+        TooManyConstants,
+    };
+
+    pub const constant_max_amount = 16_777_216;
+
     const LineStart = struct {
         offset: usize,
         line: usize,
@@ -118,7 +124,11 @@ pub const Chunk = struct {
         }
     }
 
-    pub fn writeConstant(self: *Chunk, value: anytype, line: usize) Allocator.Error!void {
+    pub fn writeConstant(
+        self: *Chunk,
+        value: anytype,
+        line: usize,
+    ) (Allocator.Error || ConstantsError)!void {
         const offset = try self.addConstant(value);
 
         if (offset <= 0xff) {
@@ -130,10 +140,7 @@ pub const Chunk = struct {
                 .constant_long = .{ .offset = @intCast(u24, offset) },
             }, line);
         } else {
-            std.debug.panic(
-                "there are more than 2^24 constants, which is not supported",
-                .{},
-            );
+            return error.TooManyConstants;
         }
     }
 

@@ -10,10 +10,10 @@ const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
 const Vm = @import("vm.zig").Vm;
 
-const InterpretError = error{
-    Compile,
-    Runtime,
-};
+pub const InterpretError = error{
+    CompileFailed,
+    RuntimePanic,
+} || fs.File.WriteError || Allocator.Error;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -38,11 +38,11 @@ pub fn main() !void {
     // try vm.run();
 }
 
-fn repl(allocator: Allocator) !void {
+fn repl(allocator: Allocator) InterpretError!void {
     const stderr = io.getStdErr().writer();
     const stdin = io.getStdIn().reader();
 
-    var vm = try Vm.init(allocator, io.getStdOut().writer(), stderr);
+    var vm = try Vm.init(allocator);
     defer vm.deinit();
 
     var buffer: [256]u8 = undefined;
@@ -53,11 +53,11 @@ fn repl(allocator: Allocator) !void {
             continue;
         } orelse return;
 
-        interpret(source) catch {};
+        interpret(allocator, source, &vm) catch {};
     }
 }
 
-fn runFile(allocator: Allocator, file_path: []const u8) !void {
+fn runFile(allocator: Allocator, file_path: []const u8) InterpretError!void {
     const stderr = io.getStdErr().writer();
 
     const source = fs.cwd().readFileAlloc(allocator, file_path, 1_048_576) catch |err| {
@@ -69,23 +69,28 @@ fn runFile(allocator: Allocator, file_path: []const u8) !void {
             error.OutOfMemory => {
                 try stderr.print("not enough memory to read file: {s}", .{file_path});
             },
-            else => try stderr.print("could not open file \"{s}\": {}", .{ file_path, err }),
+            else => |e| try stderr.print("could not open file \"{s}\": {}", .{ file_path, e }),
         }
         process.exit(74);
     };
     defer allocator.free(source);
 
-    var vm = try Vm.init(allocator, io.getStdOut().writer(), io.getStdErr().writer());
+    var vm = try Vm.init(allocator);
     defer vm.deinit();
 
-    interpret(source) catch |err| switch (err) {
-        error.Compile => process.exit(65),
-        error.Runtime => process.exit(70),
+    interpret(allocator, source, &vm) catch |err| switch (err) {
+        error.CompileFailed => process.exit(65),
+        error.RuntimePanic => process.exit(70),
+        else => |e| return e,
     };
 }
 
-fn interpret(source: []const u8) InterpretError!void {
-    try compiler.compile(source);
+fn interpret(allocator: Allocator, source: []const u8, vm: *Vm) InterpretError!void {
+    var chunk = Chunk.init(allocator);
+    defer chunk.deinit();
+
+    try compiler.compile(source, &chunk);
+    try vm.interpret(&chunk);
 }
 
 test {

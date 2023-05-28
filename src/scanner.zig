@@ -52,11 +52,7 @@ pub const Scanner = struct {
         }
     }
 
-    fn isAtEnd(self: *const Scanner) bool {
-        return self.current >= self.source.len;
-    }
-
-    fn makeToken(self: *const Scanner, typ: TokenType) Token {
+    fn makeToken(self: *const Scanner, typ: Token.Type) Token {
         return .{
             .typ = typ,
             .lexeme = self.source[self.start..self.current],
@@ -73,7 +69,7 @@ pub const Scanner = struct {
     }
 
     fn stringToken(self: *Scanner) Token {
-        while (self.peek() != '"' and !self.isAtEnd()) {
+        while (!self.isAtEnd() and self.peek() != '"') {
             if (self.peek() == '\n') self.line += 1;
             self.advanceDrop();
         }
@@ -103,7 +99,7 @@ pub const Scanner = struct {
         return self.makeToken(self.identifierType());
     }
 
-    fn identifierType(self: *Scanner) TokenType {
+    fn identifierType(self: *Scanner) Token.Type {
         switch (self.source[self.start]) {
             'a' => return self.checkKeyword(1, "nd", .@"and"),
             'c' => return self.checkKeyword(1, "lass", .class),
@@ -148,8 +144,8 @@ pub const Scanner = struct {
         self: *const Scanner,
         start_offset: usize,
         rest: []const u8,
-        typ: TokenType,
-    ) TokenType {
+        typ: Token.Type,
+    ) Token.Type {
         const start = self.start + start_offset;
         if (self.tokenLength() == start_offset + rest.len and
             mem.eql(u8, self.source[start..(start + rest.len)], rest))
@@ -159,11 +155,16 @@ pub const Scanner = struct {
         return .identifier;
     }
 
+    fn isAtEnd(self: *const Scanner) bool {
+        return self.current >= self.source.len;
+    }
+
     fn tokenLength(self: *const Scanner) usize {
         return self.current - self.start;
     }
 
     fn peek(self: *const Scanner) u8 {
+        if (self.isAtEnd()) return 0;
         return self.source[self.current];
     }
 
@@ -214,54 +215,54 @@ pub const Scanner = struct {
     }
 };
 
-pub const TokenType = enum(u8) {
-    left_paren,
-    right_paren,
-    left_brace,
-    right_brace,
-    comma,
-    dot,
-    minus,
-    plus,
-    semicolon,
-    slash,
-    star,
-
-    bang,
-    bang_equal,
-    equal,
-    equal_equal,
-    greater,
-    greater_equal,
-    less,
-    less_equal,
-
-    identifier,
-    string,
-    number,
-
-    @"and",
-    class,
-    @"else",
-    false,
-    @"for",
-    fun,
-    @"if",
-    nil,
-    @"or",
-    print,
-    @"return",
-    super,
-    this,
-    true,
-    @"var",
-    @"while",
-    @"error",
-    eof,
-};
-
 pub const Token = struct {
-    typ: TokenType,
+    pub const Type = enum(u8) {
+        left_paren,
+        right_paren,
+        left_brace,
+        right_brace,
+        comma,
+        dot,
+        minus,
+        plus,
+        semicolon,
+        slash,
+        star,
+
+        bang,
+        bang_equal,
+        equal,
+        equal_equal,
+        greater,
+        greater_equal,
+        less,
+        less_equal,
+
+        identifier,
+        string,
+        number,
+
+        @"and",
+        class,
+        @"else",
+        false,
+        @"for",
+        fun,
+        @"if",
+        nil,
+        @"or",
+        print,
+        @"return",
+        super,
+        this,
+        true,
+        @"var",
+        @"while",
+        @"error",
+        eof,
+    };
+
+    typ: Type,
     lexeme: []const u8,
     line: usize,
 };

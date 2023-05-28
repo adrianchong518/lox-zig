@@ -18,21 +18,11 @@ pub const Vm = struct {
     ip: usize,
     stack: FixedCapacityStack(Value),
 
-    outWriter: File.Writer,
-    errWriter: File.Writer,
-
-    pub fn init(
-        allocator: Allocator,
-        outWriter: File.Writer,
-        errWriter: File.Writer,
-    ) Allocator.Error!Vm {
+    pub fn init(allocator: Allocator) Allocator.Error!Vm {
         return .{
             .chunk = undefined,
             .ip = 0,
             .stack = try FixedCapacityStack(Value).init(allocator, stack_max),
-
-            .outWriter = outWriter,
-            .errWriter = errWriter,
         };
     }
 
@@ -42,13 +32,14 @@ pub const Vm = struct {
 
     pub fn interpret(self: *Vm, chunk: *Chunk) !void {
         self.chunk = chunk;
+        self.ip = 0;
         try self.run();
     }
 
-    fn run(self: *Vm) void {
+    fn run(self: *Vm) !void {
         while (self.ip < self.chunk.code.items.len) {
             if (config.trace_exec) {
-                std.debug.print("          {any}\n", .{self.stack.items()});
+                std.debug.print("            {any}\n", .{self.stack.items()});
                 _ = debug.disassembleInstruction(self.chunk, self.ip);
             }
 
@@ -61,7 +52,7 @@ pub const Vm = struct {
 
     fn runInstruction(self: *Vm, instruction: OpCode) void {
         switch (instruction) {
-            .ret => std.debug.print("{}\n", .{self.stack.pop()}),
+            .@"return" => std.debug.print("{}\n", .{self.stack.pop()}),
 
             .constant => |op| self.runConstant(op.offset),
             .constant_long => |op| self.runConstant(op.offset),
