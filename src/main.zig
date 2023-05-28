@@ -31,11 +31,6 @@ pub fn main() !void {
             try stderr.print("Usage: lox-zig [path]\n", .{});
         },
     }
-
-    // var vm = try Vm.init(allocator, &chunk);
-    // defer vm.deinit();
-
-    // try vm.run();
 }
 
 fn repl(allocator: Allocator) InterpretError!void {

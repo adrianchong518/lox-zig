@@ -35,6 +35,10 @@ pub fn FixedCapacityStack(comptime T: type) type {
         pub fn items(self: *Self) []T {
             return self.buffer[0..self.top];
         }
+
+        pub fn clear(self: *Self) void {
+            self.top = 0;
+        }
     };
 }
 

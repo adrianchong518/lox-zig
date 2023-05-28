@@ -80,14 +80,14 @@ const ParseRule = struct {
         r.set(.slash, .{ .prefix = null, .infix = Parser.binary, .precedence = .factor });
         r.set(.star, .{ .prefix = null, .infix = Parser.binary, .precedence = .factor });
 
-        r.set(.bang, .{ .prefix = null, .infix = null, .precedence = .none });
-        r.set(.bang_equal, .{ .prefix = null, .infix = null, .precedence = .none });
+        r.set(.bang, .{ .prefix = Parser.unary, .infix = null, .precedence = .none });
+        r.set(.bang_equal, .{ .prefix = null, .infix = Parser.binary, .precedence = .equality });
         r.set(.equal, .{ .prefix = null, .infix = null, .precedence = .none });
-        r.set(.equal_equal, .{ .prefix = null, .infix = null, .precedence = .none });
-        r.set(.greater, .{ .prefix = null, .infix = null, .precedence = .none });
-        r.set(.greater_equal, .{ .prefix = null, .infix = null, .precedence = .none });
-        r.set(.less, .{ .prefix = null, .infix = null, .precedence = .none });
-        r.set(.less_equal, .{ .prefix = null, .infix = null, .precedence = .none });
+        r.set(.equal_equal, .{ .prefix = null, .infix = Parser.binary, .precedence = .equality });
+        r.set(.greater, .{ .prefix = null, .infix = Parser.binary, .precedence = .comparison });
+        r.set(.greater_equal, .{ .prefix = null, .infix = Parser.binary, .precedence = .comparison });
+        r.set(.less, .{ .prefix = null, .infix = Parser.binary, .precedence = .comparison });
+        r.set(.less_equal, .{ .prefix = null, .infix = Parser.binary, .precedence = .comparison });
 
         r.set(.identifier, .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.string, .{ .prefix = null, .infix = null, .precedence = .none });
@@ -96,17 +96,17 @@ const ParseRule = struct {
         r.set(.@"and", .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.class, .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.@"else", .{ .prefix = null, .infix = null, .precedence = .none });
-        r.set(.false, .{ .prefix = null, .infix = null, .precedence = .none });
+        r.set(.false, .{ .prefix = Parser.literal, .infix = null, .precedence = .none });
         r.set(.@"for", .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.fun, .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.@"if", .{ .prefix = null, .infix = null, .precedence = .none });
-        r.set(.nil, .{ .prefix = null, .infix = null, .precedence = .none });
+        r.set(.nil, .{ .prefix = Parser.literal, .infix = null, .precedence = .none });
         r.set(.@"or", .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.print, .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.@"return", .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.super, .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.this, .{ .prefix = null, .infix = null, .precedence = .none });
-        r.set(.true, .{ .prefix = null, .infix = null, .precedence = .none });
+        r.set(.true, .{ .prefix = Parser.literal, .infix = null, .precedence = .none });
         r.set(.@"var", .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.@"while", .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.@"error", .{ .prefix = null, .infix = null, .precedence = .none });
@@ -172,6 +172,7 @@ const Parser = struct {
 
         // Emit the operator instruction
         switch (op_type) {
+            .bang => try self.emitOpCode(.not),
             .minus => try self.emitOpCode(.negate),
             else => unreachable,
         }
@@ -187,6 +188,32 @@ const Parser = struct {
             .minus => try self.emitOpCode(.subtract),
             .star => try self.emitOpCode(.multiply),
             .slash => try self.emitOpCode(.divide),
+
+            .equal_equal => try self.emitOpCode(.equal),
+            .greater => try self.emitOpCode(.greater),
+            .less => try self.emitOpCode(.less),
+            .bang_equal => {
+                try self.emitOpCode(.equal);
+                try self.emitOpCode(.not);
+            },
+            .greater_equal => {
+                try self.emitOpCode(.less);
+                try self.emitOpCode(.not);
+            },
+            .less_equal => {
+                try self.emitOpCode(.greater);
+                try self.emitOpCode(.not);
+            },
+
+            else => unreachable,
+        }
+    }
+
+    fn literal(self: *Parser) InterpretError!void {
+        switch (self.previous.typ) {
+            .nil => try self.emitOpCode(.nil),
+            .true => try self.emitOpCode(.true),
+            .false => try self.emitOpCode(.false),
             else => unreachable,
         }
     }

@@ -38,6 +38,15 @@ pub fn disassembleInstruction(chunk: *const Chunk, offset: usize) usize {
         .constant => |op| printConstant("OP_CONSTANT", chunk, op.offset),
         .constant_long => |op| printConstant("OP_CONSTANT_LONG", chunk, op.offset),
 
+        .nil => printSimple("OP_NIL"),
+        .true => printSimple("OP_TRUE"),
+        .false => printSimple("OP_FALSE"),
+
+        .equal => printSimple("OP_EQUAL"),
+        .greater => printSimple("OP_GREATER"),
+        .less => printSimple("OP_LESS"),
+
+        .not => printSimple("OP_NOT"),
         .negate => printSimple("OP_NEGATE"),
         .add => printSimple("OP_ADD"),
         .subtract => printSimple("OP_SUBTRACT"),

@@ -4,26 +4,45 @@ const ArrayList = std.ArrayList;
 
 const Value = @import("value.zig").Value;
 
-pub const OpCodeLabel = enum(u8) {
+pub const OpCodeTag = enum(u8) {
     @"return",
 
     constant,
     constant_long,
 
+    nil,
+    true,
+    false,
+
+    equal,
+    greater,
+    less,
+
+    not,
     negate,
     add,
     subtract,
     multiply,
     divide,
+
     _,
 };
 
-pub const OpCode = union(OpCodeLabel) {
+pub const OpCode = union(OpCodeTag) {
     @"return",
 
     constant: struct { offset: u8 },
     constant_long: struct { offset: u24 },
 
+    nil,
+    true,
+    false,
+
+    equal,
+    greater,
+    less,
+
+    not,
     negate,
     add,
     subtract,
@@ -75,25 +94,33 @@ pub const Chunk = struct {
     /// start of the next instruction
     pub fn nextOpCode(self: *const Chunk, offset: *usize) ?OpCode {
         const instruction = self.next(offset);
-        switch (@intToEnum(OpCodeLabel, instruction)) {
-            .@"return" => return .@"return",
+        return switch (@intToEnum(OpCodeTag, instruction)) {
+            .@"return" => .@"return",
 
-            .constant => return .{ .constant = .{ .offset = self.next(offset) } },
-            .constant_long => return .{ .constant_long = .{
+            .constant => .{ .constant = .{ .offset = self.next(offset) } },
+            .constant_long => .{ .constant_long = .{
                 .offset = self.next(offset) |
                     (@as(u24, self.next(offset)) << 8) |
                     (@as(u24, self.next(offset)) << 16),
             } },
 
-            .negate => return .negate,
+            .nil => .nil,
+            .true => .true,
+            .false => .false,
 
-            .add => return .add,
-            .subtract => return .subtract,
-            .multiply => return .multiply,
-            .divide => return .divide,
+            .equal => .equal,
+            .greater => .greater,
+            .less => .less,
 
-            _ => return null,
-        }
+            .not => .not,
+            .negate => .negate,
+            .add => .add,
+            .subtract => .subtract,
+            .multiply => .multiply,
+            .divide => .divide,
+
+            _ => null,
+        };
     }
 
     pub fn write(self: *Chunk, byte: u8, line: usize) Allocator.Error!void {
@@ -120,7 +147,7 @@ pub const Chunk = struct {
                 try self.write(@truncate(u8, op.offset >> 16), line);
             },
 
-            .@"return", .negate, .add, .subtract, .multiply, .divide => {},
+            else => {},
         }
     }
 
