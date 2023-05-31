@@ -157,7 +157,7 @@ const Parser = struct {
         try self.emitOpCode(.@"return");
 
         if (config.print_code and !self.had_error) {
-            debug.disassemble(self.currentChunk(), "code");
+            debug.disassemble(self.currentChunk().*, "code");
         }
     }
 
@@ -296,14 +296,14 @@ const Parser = struct {
     }
 
     fn errorAtCurrent(self: *Parser, message: []const u8) File.WriteError!void {
-        try self.errorAt(&self.current, message);
+        try self.errorAt(self.current, message);
     }
 
     fn errorAtPrev(self: *Parser, message: []const u8) File.WriteError!void {
-        try self.errorAt(&self.previous, message);
+        try self.errorAt(self.previous, message);
     }
 
-    fn errorAt(self: *Parser, token: *const Token, message: []const u8) File.WriteError!void {
+    fn errorAt(self: *Parser, token: Token, message: []const u8) File.WriteError!void {
         if (self.panic_mode) return;
         self.panic_mode = true;
 

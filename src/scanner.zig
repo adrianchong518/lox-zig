@@ -52,7 +52,7 @@ pub const Scanner = struct {
         }
     }
 
-    fn makeToken(self: *const Scanner, typ: Token.Type) Token {
+    fn makeToken(self: Scanner, typ: Token.Type) Token {
         return .{
             .typ = typ,
             .lexeme = self.source[self.start..self.current],
@@ -60,7 +60,7 @@ pub const Scanner = struct {
         };
     }
 
-    fn errorToken(self: *const Scanner, message: []const u8) Token {
+    fn errorToken(self: Scanner, message: []const u8) Token {
         return .{
             .typ = .@"error",
             .lexeme = message,
@@ -141,7 +141,7 @@ pub const Scanner = struct {
     }
 
     fn checkKeyword(
-        self: *const Scanner,
+        self: Scanner,
         start_offset: usize,
         rest: []const u8,
         typ: Token.Type,
@@ -155,20 +155,20 @@ pub const Scanner = struct {
         return .identifier;
     }
 
-    fn isAtEnd(self: *const Scanner) bool {
+    fn isAtEnd(self: Scanner) bool {
         return self.current >= self.source.len;
     }
 
-    fn tokenLength(self: *const Scanner) usize {
+    fn tokenLength(self: Scanner) usize {
         return self.current - self.start;
     }
 
-    fn peek(self: *const Scanner) u8 {
+    fn peek(self: Scanner) u8 {
         if (self.isAtEnd()) return 0;
         return self.source[self.current];
     }
 
-    fn peekNext(self: *const Scanner) u8 {
+    fn peekNext(self: Scanner) u8 {
         if (self.isAtEnd()) return 0;
         return self.source[self.current + 1];
     }

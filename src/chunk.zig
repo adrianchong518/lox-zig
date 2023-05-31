@@ -78,13 +78,14 @@ pub const Chunk = struct {
         self.code.deinit();
         self.lines.deinit();
         self.constants.deinit();
+        self.* = undefined;
     }
 
-    pub fn read(self: *const Chunk, offset: usize) u8 {
+    pub fn read(self: Chunk, offset: usize) u8 {
         return self.code.items[offset];
     }
 
-    fn next(self: *const Chunk, offset: *usize) u8 {
+    fn next(self: Chunk, offset: *usize) u8 {
         const byte = self.read(offset.*);
         offset.* += 1;
         return byte;
@@ -92,7 +93,7 @@ pub const Chunk = struct {
 
     /// Returns the corresponding `OpCode` at `code.items[offset]`, and mutates `offset` to be the
     /// start of the next instruction
-    pub fn nextOpCode(self: *const Chunk, offset: *usize) ?OpCode {
+    pub fn nextOpCode(self: Chunk, offset: *usize) ?OpCode {
         const instruction = self.next(offset);
         return switch (@intToEnum(OpCodeTag, instruction)) {
             .@"return" => .@"return",
@@ -176,7 +177,7 @@ pub const Chunk = struct {
         return self.constants.items.len - 1;
     }
 
-    pub fn getLine(self: *const Chunk, offset: usize) usize {
+    pub fn getLine(self: Chunk, offset: usize) usize {
         var start: usize = 0;
         var end = self.lines.items.len - 1;
 

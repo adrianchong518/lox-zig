@@ -5,7 +5,7 @@ const OpCode = @import("chunk.zig").OpCode;
 const OpCodeLabel = @import("chunk.zig").OpCodeLabel;
 const Value = @import("value.zig").Value;
 
-pub fn disassemble(chunk: *const Chunk, name: []const u8) void {
+pub fn disassemble(chunk: Chunk, name: []const u8) void {
     std.debug.print("== {s} ==\n", .{name});
 
     var offset: usize = 0;
@@ -14,7 +14,7 @@ pub fn disassemble(chunk: *const Chunk, name: []const u8) void {
     }
 }
 
-pub fn disassembleInstruction(chunk: *const Chunk, offset: usize) usize {
+pub fn disassembleInstruction(chunk: Chunk, offset: usize) usize {
     std.debug.print("{:0>4} ", .{offset});
 
     const line = chunk.getLine(offset);
@@ -63,7 +63,7 @@ fn printSimple(name: []const u8) void {
 
 fn printConstant(
     name: []const u8,
-    chunk: *const Chunk,
+    chunk: Chunk,
     constant_offset: usize,
 ) void {
     std.debug.print("{s: <16} {: >4} '{}'\n", .{

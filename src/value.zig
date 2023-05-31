@@ -34,20 +34,19 @@ pub const Value = union(enum) {
     pub fn truthiness(self: Value) bool {
         return switch (self) {
             .nil => false,
-            .number => true,
             .bool => |b| b,
-            .object => @panic("todo"),
+            else => true,
         };
     }
 
-    pub fn equal(self: Value, other: Value) bool {
+    pub fn eql(self: Value, other: Value) bool {
         if (@enumToInt(self) != @enumToInt(other)) return false;
 
         return switch (self) {
             .nil => true,
             .number => |n| n == other.number,
             .bool => |b| b == other.bool,
-            .object => @panic("todo"),
+            .object => |o| o.eql(other.object),
         };
     }
 
@@ -57,12 +56,16 @@ pub const Value = union(enum) {
         options: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
+        if (std.mem.eql(u8, fmt, "#")) try writer.print("<.{s} ", .{@tagName(self)});
+
         switch (self) {
             .nil => try writer.writeAll("nil"),
             .number => |n| try writer.print("{}", .{n}),
             .bool => |b| try writer.print("{}", .{b}),
             .object => |o| try o.format(fmt, options, writer),
         }
+
+        if (std.mem.eql(u8, fmt, "#")) try writer.writeAll(">");
     }
 
     pub fn isString(self: Value) bool {

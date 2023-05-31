@@ -3,6 +3,7 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 
 const Vm = @import("vm.zig").Vm;
+const Table = @import("Table.zig");
 
 const Object = @This();
 
@@ -22,24 +23,45 @@ pub const Type = enum {
 pub const String = struct {
     object: Object,
     bytes: []const u8,
+    hash: u32,
 
     /// Create a new `String` object with ownership of `bytes` transferred. Caller owns the memory.
     /// Call `destroy` with the result to free memory.
     pub fn create(vm: *Vm, bytes: []const u8) Allocator.Error!*String {
-        const object = try Object.create(vm, .string);
-        var out = object.asString();
-        out.* = .{
-            .object = object.*,
-            .bytes = bytes,
-        };
-        return out;
+        if (tryCreateIntern(vm, bytes)) |out| {
+            vm.allocator.free(bytes);
+            return out;
+        }
+
+        return createAssumeNovel(vm, bytes);
     }
 
     /// Create a new `String` object by copying `bytes`. Caller owns the memory. Call `destroy`
     /// with the result to free memory.
     pub fn createCopy(vm: *Vm, bytes: []const u8) Allocator.Error!*String {
+        if (tryCreateIntern(vm, bytes)) |out| return out;
+
         const copied_bytes = try vm.allocator.dupe(u8, bytes);
-        return String.create(vm, copied_bytes);
+        return createAssumeNovel(vm, copied_bytes);
+    }
+
+    fn tryCreateIntern(vm: *Vm, bytes: []const u8) ?*String {
+        return vm.strings.getKey(bytes);
+    }
+
+    fn createAssumeNovel(vm: *Vm, bytes: []const u8) Allocator.Error!*String {
+        const object = try Object.create(vm, .string);
+        var out = object.asString();
+
+        out.* = .{
+            .object = object.*,
+            .bytes = bytes,
+            .hash = Table.hash(bytes),
+        };
+
+        _ = try vm.strings.put(out, .nil);
+
+        return out;
     }
 
     /// Deallocate the `String` object and the inner `bytes`.
@@ -48,8 +70,25 @@ pub const String = struct {
         vm.allocator.destroy(self);
     }
 
-    fn equal(self: *const String, other: *const String) bool {
-        return mem.eql(u8, self.bytes, other.bytes);
+    pub fn eql(self: *const String, other: anytype) bool {
+        const Other = @TypeOf(other);
+        switch (Other) {
+            *const Object, *Object, *const String, *String => {
+                return @ptrToInt(self) == @ptrToInt(other);
+            },
+
+            []const u8, []u8 => return mem.eql(u8, self.bytes, other),
+
+            else => {
+                @compileError("Cannot compare " ++ @typeName(String) ++ " with " ++
+                    @typeName(Other) ++ ".");
+            },
+        }
+        if (Other == *const Object or Other == *Object) {
+            return mem.eql(u8, self.bytes, other.asString().bytes);
+        } else if (Other == *const String or Other == *String) {
+            return mem.eql(u8, self.bytes, other.bytes);
+        } else if (Other == []const u8 or Other == []u8) {} else {}
     }
 };
 
@@ -69,7 +108,7 @@ pub fn destroy(self: *Object, vm: *Vm) void {
     }
 }
 
-pub fn isString(self: *const Object) bool {
+pub fn isString(self: Object) bool {
     return self.typ == .string;
 }
 
@@ -78,11 +117,13 @@ pub fn asString(self: *Object) *String {
     return @fieldParentPtr(String, "object", self);
 }
 
-pub fn equal(self: *const Object, other: *const Object) bool {
-    if (self.typ != other.typ) return false;
+pub fn eql(self: *Object, other: anytype) bool {
+    if (@TypeOf(other) == *const Object or @TypeOf(other) == *const Object) {
+        if (self.typ != other.typ) return false;
+    }
 
     return switch (self.typ) {
-        .string => self.asString().equal(other.asString()),
+        .string => self.asString().eql(other),
     };
 }
 
@@ -92,9 +133,9 @@ pub fn format(
     options: std.fmt.FormatOptions,
     writer: anytype,
 ) !void {
-    _ = fmt;
     _ = options;
 
+    if (std.mem.eql(u8, fmt, "#")) try writer.print("{*} ", .{self});
     switch (self.typ) {
         .string => try writer.print("{s}", .{self.asString().bytes}),
     }

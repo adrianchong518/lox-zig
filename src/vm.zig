@@ -13,13 +13,17 @@ const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
 const Value = @import("value.zig").Value;
 const Object = @import("Object.zig");
+const Table = @import("Table.zig");
 
 pub const Vm = struct {
     allocator: Allocator,
 
     chunk: *Chunk,
     ip: usize,
+
     stack: FixedCapacityStack(Value),
+    strings: Table,
+
     objects: ?*Object,
 
     const stack_max = 256;
@@ -30,11 +34,13 @@ pub const Vm = struct {
             .chunk = undefined,
             .ip = 0,
             .stack = try FixedCapacityStack(Value).init(allocator, stack_max),
+            .strings = Table.init(allocator),
             .objects = null,
         };
     }
 
     pub fn deinit(self: *Vm) void {
+        self.strings.deinit();
         self.stack.deinit();
 
         var object = self.objects;
@@ -43,6 +49,8 @@ pub const Vm = struct {
             obj.destroy(self);
             object = next;
         }
+
+        self.* = undefined;
     }
 
     pub fn interpret(self: *Vm, chunk: *Chunk) InterpretError!void {
@@ -54,8 +62,12 @@ pub const Vm = struct {
     fn run(self: *Vm) InterpretError!void {
         while (self.ip < self.chunk.code.items.len) {
             if (config.trace_exec) {
-                std.debug.print("            {any}\n", .{self.stack.items()});
-                _ = debug.disassembleInstruction(self.chunk, self.ip);
+                std.debug.print("           ", .{});
+                for (self.stack.items()) |i| {
+                    std.debug.print(" [ {#} ]", .{i});
+                }
+                std.debug.print("\n", .{});
+                _ = debug.disassembleInstruction(self.chunk.*, self.ip);
             }
 
             const instruction = self.chunk.nextOpCode(&self.ip);
@@ -79,7 +91,7 @@ pub const Vm = struct {
             .equal => {
                 const b = self.stack.pop();
                 const a = self.stack.pop();
-                self.stack.push(Value.from(a.equal(b)));
+                self.stack.push(Value.from(a.eql(b)));
             },
             .greater => {},
             .less => {},
@@ -104,6 +116,8 @@ pub const Vm = struct {
                         a_value.object.asString().bytes,
                         b_value.object.asString().bytes,
                     });
+                    errdefer self.allocator.free(bytes);
+
                     const object = try Object.String.create(self, bytes);
                     self.stack.push(Value.from(object));
                 } else if (a_value == .number and b_value == .number) {

@@ -20,6 +20,7 @@ pub fn FixedCapacityStack(comptime T: type) type {
 
         pub fn deinit(self: *Self) void {
             self.allocator.free(self.buffer);
+            self.* = undefined;
         }
 
         pub fn push(self: *Self, value: T) void {
