@@ -2,6 +2,7 @@ const std = @import("std");
 const mem = std.mem;
 const io = std.io;
 const Allocator = mem.Allocator;
+const ArrayList = std.ArrayList;
 const File = std.fs.File;
 
 const config = @import("config");
@@ -13,7 +14,6 @@ const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
 const Value = @import("value.zig").Value;
 const Object = @import("Object.zig");
-const Table = @import("Table.zig");
 
 pub const Vm = struct {
     allocator: Allocator,
@@ -23,7 +23,6 @@ pub const Vm = struct {
 
     stack: FixedCapacityStack(Value),
     strings: Object.String.HashMap(void),
-    constant_strings: Object.String.HashMap(usize),
     globals: Object.String.HashMap(Value),
 
     objects: ?*Object,
@@ -42,7 +41,6 @@ pub const Vm = struct {
 
             .stack = try FixedCapacityStack(Value).init(allocator, stack_max),
             .strings = Object.String.HashMap(void).init(allocator),
-            .constant_strings = Object.String.HashMap(usize).init(allocator),
             .globals = Object.String.HashMap(Value).init(allocator),
 
             .objects = null,
@@ -51,7 +49,6 @@ pub const Vm = struct {
 
     pub fn deinit(self: *Vm) void {
         self.globals.deinit();
-        self.constant_strings.deinit();
         self.strings.deinit();
         self.stack.deinit();
 

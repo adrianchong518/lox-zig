@@ -4,7 +4,6 @@ const Allocator = mem.Allocator;
 
 const hashBytes = @import("hash.zig").hashBytes;
 const Vm = @import("vm.zig").Vm;
-const Table = @import("Table.zig");
 
 const Object = @This();
 

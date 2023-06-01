@@ -19,6 +19,7 @@ const Vm = @import("vm.zig").Vm;
 pub fn compile(source: []const u8, vm: *Vm, chunk: *Chunk) InterpretError!void {
     var scanner = Scanner.init(source);
     var parser = Parser.init(vm, &scanner, chunk);
+    defer parser.deinit();
 
     try parser.advance();
     while (!try parser.match(.eof)) {
@@ -129,29 +130,30 @@ const Parser = struct {
     vm: *Vm,
 
     scanner: *Scanner,
-    previous: Token,
-    current: Token,
+    previous: Token = undefined,
+    current: Token = undefined,
 
     compiling_chunk: *Chunk,
+    constant_strings: Object.String.HashMap(usize),
 
-    had_error: bool,
-    panic_mode: bool,
+    had_error: bool = false,
+    panic_mode: bool = false,
 
     const Error = File.WriteError || Allocator.Error;
 
     fn init(vm: *Vm, scanner: *Scanner, compiling_chunk: *Chunk) Parser {
         return .{
             .vm = vm,
-
             .scanner = scanner,
-            .previous = undefined,
-            .current = undefined,
 
             .compiling_chunk = compiling_chunk,
-
-            .had_error = false,
-            .panic_mode = false,
+            .constant_strings = Object.String.HashMap(usize).init(vm.allocator),
         };
+    }
+
+    fn deinit(self: *Parser) void {
+        self.constant_strings.deinit();
+        self.* = undefined;
     }
 
     fn end(self: *Parser) Error!void {
@@ -183,7 +185,7 @@ const Parser = struct {
 
         try self.consume(.semicolon, "Expect ';' after variable declaration.");
 
-        const offset = try self.identifierConstant(global.lexeme);
+        const offset = try self.stringConstant(global.lexeme);
         try self.emitOpCode(.{ .define_global = .{ .offset = offset } });
     }
 
@@ -218,12 +220,11 @@ const Parser = struct {
 
     fn string(self: *Parser, _: bool) Error!void {
         const bytes = self.previous.lexeme[1 .. self.previous.lexeme.len - 1];
-        const object = try Object.String.createCopy(self.vm, bytes);
-        try self.emitConstant(object);
+        try self.emitStringConstant(bytes);
     }
 
     fn variable(self: *Parser, can_assign: bool) Error!void {
-        const offset = try self.identifierConstant(self.previous.lexeme);
+        const offset = try self.stringConstant(self.previous.lexeme);
 
         if (can_assign and try self.match(.equal)) {
             try self.expression();
@@ -372,20 +373,27 @@ const Parser = struct {
         try self.currentChunk().writeOpCode(op_code, self.previous.line);
     }
 
-    fn emitConstant(self: *Parser, value: anytype) Error!void {
+    fn emitConstant(self: *Parser, value: anytype) Allocator.Error!void {
         const chunk = self.currentChunk();
         const offset = try chunk.addConstant(value);
         try chunk.writeOpCode(.{ .constant = .{ .offset = offset } }, self.previous.line);
     }
 
-    fn identifierConstant(self: *Parser, name: []const u8) Allocator.Error!usize {
-        if (self.vm.constant_strings.getAdapted(name, Object.String.SliceContext{})) |offset| {
+    fn emitStringConstant(self: *Parser, bytes: []const u8) Allocator.Error!void {
+        const offset = try self.stringConstant(bytes);
+        try self
+            .currentChunk()
+            .writeOpCode(.{ .constant = .{ .offset = offset } }, self.previous.line);
+    }
+
+    fn stringConstant(self: *Parser, bytes: []const u8) Allocator.Error!usize {
+        if (self.constant_strings.getAdapted(bytes, Object.String.SliceContext{})) |offset| {
             return offset;
         }
 
-        const identifier = try Object.String.createCopy(self.vm, name);
+        const identifier = try Object.String.createCopy(self.vm, bytes);
         const offset = try self.currentChunk().addConstant(identifier);
-        _ = try self.vm.constant_strings.put(identifier, offset);
+        try self.constant_strings.put(identifier, offset);
         return offset;
     }
 
