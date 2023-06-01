@@ -23,23 +23,35 @@ pub const Vm = struct {
 
     stack: FixedCapacityStack(Value),
     strings: Table,
+    constant_strings: Table,
+    globals: Table,
 
     objects: ?*Object,
 
     const stack_max = 256;
 
+    const Error = File.WriteError || Allocator.Error || error{RuntimePanic};
+    const Status = ?enum { stop };
+
     pub fn init(allocator: Allocator) Allocator.Error!Vm {
         return .{
             .allocator = allocator,
+
             .chunk = undefined,
             .ip = 0,
+
             .stack = try FixedCapacityStack(Value).init(allocator, stack_max),
             .strings = Table.init(allocator),
+            .constant_strings = Table.init(allocator),
+            .globals = Table.init(allocator),
+
             .objects = null,
         };
     }
 
     pub fn deinit(self: *Vm) void {
+        self.globals.deinit();
+        self.constant_strings.deinit();
         self.strings.deinit();
         self.stack.deinit();
 
@@ -53,14 +65,14 @@ pub const Vm = struct {
         self.* = undefined;
     }
 
-    pub fn interpret(self: *Vm, chunk: *Chunk) InterpretError!void {
+    pub fn interpret(self: *Vm, chunk: *Chunk) Error!void {
         self.chunk = chunk;
         self.ip = 0;
         try self.run();
     }
 
-    fn run(self: *Vm) InterpretError!void {
-        while (self.ip < self.chunk.code.items.len) {
+    fn run(self: *Vm) Error!void {
+        while (true) {
             if (config.trace_exec) {
                 std.debug.print("           ", .{});
                 for (self.stack.items()) |i| {
@@ -72,17 +84,45 @@ pub const Vm = struct {
 
             const instruction = self.chunk.nextOpCode(&self.ip);
             if (instruction) |inst| {
-                try self.runInstruction(inst);
+                if (try self.runInstruction(inst)) |s| {
+                    switch (s) {
+                        .stop => return,
+                    }
+                }
             }
         }
     }
 
-    fn runInstruction(self: *Vm, instruction: OpCode) InterpretError!void {
+    fn runInstruction(self: *Vm, instruction: OpCode) Error!Status {
         switch (instruction) {
-            .@"return" => std.debug.print("{}\n", .{self.stack.pop()}),
+            .@"return" => return .stop,
 
-            .constant => |op| self.runConstant(op.offset),
-            .constant_long => |op| self.runConstant(op.offset),
+            .constant => |op| self.stack.push(self.chunk.constants.items[op.offset]),
+
+            .define_global => |op| {
+                const name = self.chunk.constants.items[op.offset].object.asString();
+                _ = try self.globals.put(name, self.stack.peek(0));
+                _ = self.stack.pop();
+            },
+            .get_global => |op| {
+                const name = self.chunk.constants.items[op.offset].object.asString();
+                const value = self.globals.get(name) orelse {
+                    try self.runtimeError("Undefined variable '{}'", .{Value.from(name)});
+                    return error.RuntimePanic;
+                };
+                self.stack.push(value);
+            },
+            .set_global => |op| {
+                const name = self.chunk.constants.items[op.offset].object.asString();
+                const entry = self.globals.getEntry(name) orelse {
+                    try self.runtimeError("Undefined variable '{}'", .{Value.from(name)});
+                    return error.RuntimePanic;
+                };
+                const value = self.stack.peek(0);
+                entry.value_ptr.* = value;
+            },
+
+            .pop => _ = self.stack.pop(),
 
             .nil => self.stack.push(.nil),
             .true => self.stack.push(Value.from(true)),
@@ -131,14 +171,14 @@ pub const Vm = struct {
             .subtract => try self.binaryOp(.@"-"),
             .multiply => try self.binaryOp(.@"*"),
             .divide => try self.binaryOp(.@"/"),
+
+            .print => try io.getStdOut().writer().print("{}\n", .{self.stack.pop()}),
         }
+
+        return null;
     }
 
-    fn runConstant(self: *Vm, constant_offset: usize) void {
-        self.stack.push(self.chunk.constants.items[constant_offset]);
-    }
-
-    fn binaryOp(self: *Vm, comptime op: @Type(.EnumLiteral)) InterpretError!void {
+    fn binaryOp(self: *Vm, comptime op: @Type(.EnumLiteral)) Error!void {
         const b_value = self.stack.pop();
         const a_value = self.stack.pop();
 

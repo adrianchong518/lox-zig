@@ -74,18 +74,18 @@ pub fn deinit(self: *Table) void {
     self.* = undefined;
 }
 
-pub fn put(self: *Table, key: *Object.String, value: Value) Allocator.Error!bool {
+pub fn put(self: *Table, key: *Object.String, value: anytype) Allocator.Error!bool {
     const gop = try self.getOrPut(key);
-    gop.value_ptr.* = value;
+    gop.value_ptr.* = Value.from(value);
 
     return !gop.found_existing;
 }
 
-fn putAssumeCapacityNoClobber(self: *Table, key: *Object.String, value: Value) void {
+fn putAssumeCapacityNoClobber(self: *Table, key: *Object.String, value: anytype) void {
     const entry = self.findEntry(key).?;
     entry.* = .{
         .key = key,
-        .value = value,
+        .value = Value.from(value),
     };
     self.size += 1;
 
@@ -154,7 +154,7 @@ pub fn getEntry(self: *Table, key: anytype) ?GetResult {
 }
 
 fn findEntry(self: *Table, key: anytype) ?*Entry {
-    if (self.available == 0) return null;
+    if (self.capacity() == 0) return null;
 
     var index = hash(key) % self.capacity();
     var tombstone: ?*Entry = null;

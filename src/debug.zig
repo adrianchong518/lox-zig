@@ -36,7 +36,11 @@ pub fn disassembleInstruction(chunk: Chunk, offset: usize) usize {
         .@"return" => printSimple("OP_RETURN"),
 
         .constant => |op| printConstant("OP_CONSTANT", chunk, op.offset),
-        .constant_long => |op| printConstant("OP_CONSTANT_LONG", chunk, op.offset),
+        .define_global => |op| printConstant("OP_DEFINE_GLOBAL", chunk, op.offset),
+        .get_global => |op| printConstant("OP_GET_GLOBAL", chunk, op.offset),
+        .set_global => |op| printConstant("OP_SET_GLOBAL", chunk, op.offset),
+
+        .pop => printSimple("OP_POP"),
 
         .nil => printSimple("OP_NIL"),
         .true => printSimple("OP_TRUE"),
@@ -52,6 +56,8 @@ pub fn disassembleInstruction(chunk: Chunk, offset: usize) usize {
         .subtract => printSimple("OP_SUBTRACT"),
         .multiply => printSimple("OP_MULTIPLY"),
         .divide => printSimple("OP_DIVIDE"),
+
+        .print => printSimple("OP_PRINT"),
     }
 
     return new_offset;
@@ -66,7 +72,7 @@ fn printConstant(
     chunk: Chunk,
     constant_offset: usize,
 ) void {
-    std.debug.print("{s: <16} {: >4} '{}'\n", .{
+    std.debug.print("{s: <16} {: >4} {#}\n", .{
         name,
         constant_offset,
         chunk.constants.items[constant_offset],

@@ -20,11 +20,10 @@ pub fn compile(source: []const u8, vm: *Vm, chunk: *Chunk) InterpretError!void {
     var scanner = Scanner.init(source);
     var parser = Parser.init(vm, &scanner, chunk);
 
-    _ = ParseRule.get(.number);
-
     try parser.advance();
-    try parser.expression();
-    try parser.consume(.eof, "Expect end of expression");
+    while (!try parser.match(.eof)) {
+        try parser.declaration();
+    }
     try parser.end();
 
     if (parser.had_error) return error.CompileFailed;
@@ -64,7 +63,7 @@ const Precedence = enum {
     }
 };
 
-const ParseFn = *const fn (*Parser) InterpretError!void;
+const ParseFn = *const fn (*Parser, bool) Parser.Error!void;
 
 const ParseRule = struct {
     prefix: ?ParseFn,
@@ -95,7 +94,7 @@ const ParseRule = struct {
         r.set(.less, .{ .prefix = null, .infix = Parser.binary, .precedence = .comparison });
         r.set(.less_equal, .{ .prefix = null, .infix = Parser.binary, .precedence = .comparison });
 
-        r.set(.identifier, .{ .prefix = null, .infix = null, .precedence = .none });
+        r.set(.identifier, .{ .prefix = Parser.variable, .infix = null, .precedence = .none });
         r.set(.string, .{ .prefix = Parser.string, .infix = null, .precedence = .none });
         r.set(.number, .{ .prefix = Parser.number, .infix = null, .precedence = .none });
 
@@ -138,6 +137,8 @@ const Parser = struct {
     had_error: bool,
     panic_mode: bool,
 
+    const Error = File.WriteError || Allocator.Error;
+
     fn init(vm: *Vm, scanner: *Scanner, compiling_chunk: *Chunk) Parser {
         return .{
             .vm = vm,
@@ -153,7 +154,7 @@ const Parser = struct {
         };
     }
 
-    fn end(self: *Parser) InterpretError!void {
+    fn end(self: *Parser) Error!void {
         try self.emitOpCode(.@"return");
 
         if (config.print_code and !self.had_error) {
@@ -161,22 +162,78 @@ const Parser = struct {
         }
     }
 
-    fn expression(self: *Parser) InterpretError!void {
+    fn declaration(self: *Parser) Error!void {
+        if (try self.match(.@"var")) {
+            try self.varStatement();
+        } else {
+            try self.statement();
+        }
+
+        if (self.panic_mode) try self.synchronize();
+    }
+
+    fn varStatement(self: *Parser) Error!void {
+        const global = try self.consumeIdentifier("Expect variable name.");
+
+        if (try self.match(.equal)) {
+            try self.expression();
+        } else {
+            try self.emitOpCode(.nil);
+        }
+
+        try self.consume(.semicolon, "Expect ';' after variable declaration.");
+
+        const offset = try self.identifierConstant(global.lexeme);
+        try self.emitOpCode(.{ .define_global = .{ .offset = offset } });
+    }
+
+    fn statement(self: *Parser) Error!void {
+        if (try self.match(.print)) {
+            try self.printStatement();
+        } else {
+            try self.expressionStatement();
+        }
+    }
+
+    fn printStatement(self: *Parser) Error!void {
+        try self.expression();
+        try self.consume(.semicolon, "Expect ';' after value.");
+        try self.emitOpCode(.print);
+    }
+
+    fn expressionStatement(self: *Parser) Error!void {
+        try self.expression();
+        try self.consume(.semicolon, "Expect ';' after expression.");
+        try self.emitOpCode(.pop);
+    }
+
+    fn expression(self: *Parser) Error!void {
         try self.parsePrecedence(.assignment);
     }
 
-    fn number(self: *Parser) InterpretError!void {
+    fn number(self: *Parser, _: bool) Error!void {
         const value = fmt.parseFloat(f64, self.previous.lexeme) catch unreachable;
         try self.emitConstant(value);
     }
 
-    fn string(self: *Parser) InterpretError!void {
+    fn string(self: *Parser, _: bool) Error!void {
         const bytes = self.previous.lexeme[1 .. self.previous.lexeme.len - 1];
         const object = try Object.String.createCopy(self.vm, bytes);
         try self.emitConstant(object);
     }
 
-    fn unary(self: *Parser) InterpretError!void {
+    fn variable(self: *Parser, can_assign: bool) Error!void {
+        const offset = try self.identifierConstant(self.previous.lexeme);
+
+        if (can_assign and try self.match(.equal)) {
+            try self.expression();
+            try self.emitOpCode(.{ .set_global = .{ .offset = offset } });
+        } else {
+            try self.emitOpCode(.{ .get_global = .{ .offset = offset } });
+        }
+    }
+
+    fn unary(self: *Parser, _: bool) Error!void {
         const op_type = self.previous.typ;
 
         // Compile the operand
@@ -190,7 +247,7 @@ const Parser = struct {
         }
     }
 
-    fn binary(self: *Parser) InterpretError!void {
+    fn binary(self: *Parser, _: bool) Error!void {
         const tok_type = self.previous.typ;
         const rule = ParseRule.get(tok_type);
         try self.parsePrecedence(rule.precedence.next());
@@ -221,7 +278,7 @@ const Parser = struct {
         }
     }
 
-    fn literal(self: *Parser) InterpretError!void {
+    fn literal(self: *Parser, _: bool) Error!void {
         switch (self.previous.typ) {
             .nil => try self.emitOpCode(.nil),
             .true => try self.emitOpCode(.true),
@@ -230,12 +287,13 @@ const Parser = struct {
         }
     }
 
-    fn parsePrecedence(self: *Parser, precedence: Precedence) InterpretError!void {
+    fn parsePrecedence(self: *Parser, precedence: Precedence) Error!void {
         try self.advance();
         const prefix_rule = ParseRule.get(self.previous.typ).prefix;
 
+        const can_assign = precedence.compare(.lte, .assignment);
         if (prefix_rule) |rule| {
-            try rule(self);
+            try rule(self, can_assign);
         } else {
             try self.errorAtPrev("Expect expression");
         }
@@ -243,27 +301,31 @@ const Parser = struct {
         while (precedence.compare(.lte, ParseRule.get(self.current.typ).precedence)) {
             try self.advance();
             const infix_rule = ParseRule.get(self.previous.typ).infix;
-            if (infix_rule) |rule| try rule(self);
+            if (infix_rule) |rule| try rule(self, can_assign);
+        }
+
+        if (can_assign and try self.match(.equal)) {
+            try self.errorAtPrev("Invalid assignment target.");
         }
     }
 
-    fn grouping(self: *Parser) InterpretError!void {
+    fn grouping(self: *Parser, _: bool) Error!void {
         try self.expression();
         try self.consume(.right_paren, "Expect ')' after expression");
     }
 
-    fn advance(self: *Parser) InterpretError!void {
+    fn advance(self: *Parser) Error!void {
         self.previous = self.current;
 
         while (true) {
             self.current = self.scanner.scanToken();
-            if (self.current.typ != .@"error") break;
+            if (!self.check(.@"error")) break;
             try self.errorAtCurrent(self.current.lexeme);
         }
     }
 
-    fn consume(self: *Parser, typ: Token.Type, message: []const u8) InterpretError!void {
-        if (self.current.typ == typ) {
+    fn consume(self: *Parser, typ: Token.Type, message: []const u8) Error!void {
+        if (self.check(typ)) {
             try self.advance();
             return;
         }
@@ -271,28 +333,60 @@ const Parser = struct {
         try self.errorAtCurrent(message);
     }
 
+    fn consumeIdentifier(self: *Parser, error_message: []const u8) Error!Token {
+        try self.consume(.identifier, error_message);
+        return self.previous;
+    }
+
+    fn match(self: *Parser, typ: Token.Type) Error!bool {
+        if (!self.check(typ)) return false;
+        try self.advance();
+        return true;
+    }
+
+    fn check(self: *Parser, typ: Token.Type) bool {
+        return self.current.typ == typ;
+    }
+
     fn currentChunk(self: *Parser) *Chunk {
         return self.compiling_chunk;
     }
 
-    fn emit(self: *Parser, byte: u8) InterpretError!void {
+    fn synchronize(self: *Parser) Error!void {
+        self.panic_mode = false;
+
+        while (!self.check(.eof)) {
+            if (self.previous.typ == .semicolon) return;
+            switch (self.current.typ) {
+                .class, .fun, .@"var", .@"for", .@"if", .@"while", .print, .@"return" => return,
+                else => try self.advance(),
+            }
+        }
+    }
+
+    fn emit(self: *Parser, byte: u8) Allocator.Error!void {
         try self.currentChunk().write(byte, self.previous.line);
     }
 
-    fn emitOpCode(self: *Parser, op_code: OpCode) InterpretError!void {
+    fn emitOpCode(self: *Parser, op_code: OpCode) Allocator.Error!void {
         try self.currentChunk().writeOpCode(op_code, self.previous.line);
     }
 
-    fn emitConstant(self: *Parser, value: anytype) InterpretError!void {
-        self.currentChunk().writeConstant(value, self.previous.line) catch |err| switch (err) {
-            error.TooManyConstants => {
-                try self.errorAtPrev(fmt.comptimePrint(
-                    "Too many constants in one chunk (max: {})",
-                    .{Chunk.constant_max_amount},
-                ));
-            },
-            else => |e| return e,
-        };
+    fn emitConstant(self: *Parser, value: anytype) Error!void {
+        const chunk = self.currentChunk();
+        const offset = try chunk.addConstant(value);
+        try chunk.writeOpCode(.{ .constant = .{ .offset = offset } }, self.previous.line);
+    }
+
+    fn identifierConstant(self: *Parser, name: []const u8) Allocator.Error!usize {
+        if (self.vm.constant_strings.getEntry(name)) |entry| {
+            return @floatToInt(usize, entry.value_ptr.number);
+        }
+
+        const identifier = try Object.String.createCopy(self.vm, name);
+        const offset = try self.currentChunk().addConstant(identifier);
+        _ = try self.vm.constant_strings.put(identifier, offset);
+        return offset;
     }
 
     fn errorAtCurrent(self: *Parser, message: []const u8) File.WriteError!void {
@@ -314,7 +408,7 @@ const Parser = struct {
         switch (token.typ) {
             .@"error" => {},
             .eof => try stderr.writeAll(" at end"),
-            else => try stderr.print(" at {s}", .{token.lexeme}),
+            else => try stderr.print(" at '{s}'", .{token.lexeme}),
         }
 
         try stderr.print(": {s}\n", .{message});

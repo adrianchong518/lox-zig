@@ -1,4 +1,5 @@
 const std = @import("std");
+const trait = std.meta.trait;
 
 const Object = @import("Object.zig");
 
@@ -22,12 +23,17 @@ pub const Value = union(enum) {
             }
         }
 
-        return switch (T) {
-            Value => value,
-            f64, comptime_float => .{ .number = value },
-            bool => .{ .bool = value },
-            *Object => .{ .object = value },
-            else => @compileError("Unsupported value type: " ++ @typeName(T)),
+        return switch (@typeInfo(T)) {
+            .Float, .ComptimeFloat => .{ .number = value },
+            .Int, .ComptimeInt => .{ .number = @intToFloat(f64, value) },
+            else => {
+                return switch (T) {
+                    Value => value,
+                    bool => .{ .bool = value },
+                    *Object => .{ .object = value },
+                    else => @as(Value, value),
+                };
+            },
         };
     }
 

@@ -8,7 +8,11 @@ pub const OpCodeTag = enum(u8) {
     @"return",
 
     constant,
-    constant_long,
+    define_global,
+    get_global,
+    set_global,
+
+    pop,
 
     nil,
     true,
@@ -24,6 +28,8 @@ pub const OpCodeTag = enum(u8) {
     subtract,
     multiply,
     divide,
+
+    print,
 
     _,
 };
@@ -31,8 +37,12 @@ pub const OpCodeTag = enum(u8) {
 pub const OpCode = union(OpCodeTag) {
     @"return",
 
-    constant: struct { offset: u8 },
-    constant_long: struct { offset: u24 },
+    constant: struct { offset: usize },
+    define_global: struct { offset: usize },
+    get_global: struct { offset: usize },
+    set_global: struct { offset: usize },
+
+    pop,
 
     nil,
     true,
@@ -48,16 +58,14 @@ pub const OpCode = union(OpCodeTag) {
     subtract,
     multiply,
     divide,
+
+    print,
 };
 
 pub const Chunk = struct {
     code: ArrayList(u8),
     lines: ArrayList(LineStart),
     constants: ArrayList(Value),
-
-    pub const ConstantsError = error{
-        TooManyConstants,
-    };
 
     pub const constant_max_amount = 16_777_216;
 
@@ -98,12 +106,12 @@ pub const Chunk = struct {
         return switch (@intToEnum(OpCodeTag, instruction)) {
             .@"return" => .@"return",
 
-            .constant => .{ .constant = .{ .offset = self.next(offset) } },
-            .constant_long => .{ .constant_long = .{
-                .offset = self.next(offset) |
-                    (@as(u24, self.next(offset)) << 8) |
-                    (@as(u24, self.next(offset)) << 16),
-            } },
+            .constant => .{ .constant = .{ .offset = self.nextConstantOffset(offset) } },
+            .define_global => .{ .define_global = .{ .offset = self.nextConstantOffset(offset) } },
+            .get_global => .{ .get_global = .{ .offset = self.nextConstantOffset(offset) } },
+            .set_global => .{ .set_global = .{ .offset = self.nextConstantOffset(offset) } },
+
+            .pop => .pop,
 
             .nil => .nil,
             .true => .true,
@@ -120,8 +128,24 @@ pub const Chunk = struct {
             .multiply => .multiply,
             .divide => .divide,
 
+            .print => .print,
+
             _ => null,
         };
+    }
+
+    fn nextConstantOffset(self: Chunk, offset: *usize) usize {
+        var constant_offset: usize = 0;
+
+        while (self.read(offset.*) & 0b1000_0000 != 0) {
+            const byte = self.next(offset);
+            constant_offset |= byte & 0b0111_1111;
+            constant_offset <<= 7;
+        }
+
+        constant_offset |= self.next(offset) & 0b0111_1111;
+
+        return constant_offset;
     }
 
     pub fn write(self: *Chunk, byte: u8, line: usize) Allocator.Error!void {
@@ -140,39 +164,31 @@ pub const Chunk = struct {
         try self.write(@enumToInt(op_code), line);
 
         switch (op_code) {
-            .constant => |op| try self.write(op.offset, line),
-
-            .constant_long => |op| {
-                try self.write(@truncate(u8, op.offset), line);
-                try self.write(@truncate(u8, op.offset >> 8), line);
-                try self.write(@truncate(u8, op.offset >> 16), line);
-            },
+            .constant => |op| try self.writeOffset(op.offset, line),
+            .define_global => |op| try self.writeOffset(op.offset, line),
+            .get_global => |op| try self.writeOffset(op.offset, line),
+            .set_global => |op| try self.writeOffset(op.offset, line),
 
             else => {},
         }
     }
 
-    pub fn writeConstant(
-        self: *Chunk,
-        value: anytype,
-        line: usize,
-    ) (Allocator.Error || ConstantsError)!void {
-        const offset = try self.addConstant(value);
-
-        if (offset <= 0xff) {
-            try self.writeOpCode(.{
-                .constant = .{ .offset = @intCast(u8, offset) },
-            }, line);
-        } else if (offset <= 0xff_ff_ff) {
-            try self.writeOpCode(.{
-                .constant_long = .{ .offset = @intCast(u24, offset) },
-            }, line);
-        } else {
-            return error.TooManyConstants;
+    fn writeOffset(self: *Chunk, offset: usize, line: usize) Allocator.Error!void {
+        if (offset > 0b0111_1111) {
+            try self.writeLongOffset(offset >> 7, line);
         }
+
+        try self.write(@truncate(u8, offset & 0b0111_1111), line);
     }
 
-    fn addConstant(self: *Chunk, value: anytype) Allocator.Error!usize {
+    fn writeLongOffset(self: *Chunk, offset: usize, line: usize) Allocator.Error!void {
+        if (offset > 0b0111_1111) {
+            try self.writeLongOffset(offset >> 7, line);
+        }
+        try self.write(@truncate(u8, (offset & 0b0111_1111) | 0b1000_0000), line);
+    }
+
+    pub fn addConstant(self: *Chunk, value: anytype) Allocator.Error!usize {
         try self.constants.append(Value.from(value));
         return self.constants.items.len - 1;
     }

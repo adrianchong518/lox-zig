@@ -90,6 +90,19 @@ pub const String = struct {
             return mem.eql(u8, self.bytes, other.bytes);
         } else if (Other == []const u8 or Other == []u8) {} else {}
     }
+
+    pub fn format(
+        self: *String,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = options;
+
+        if (std.mem.eql(u8, fmt, "#")) try writer.writeAll("\"");
+        try writer.print("{s}", .{self.bytes});
+        if (std.mem.eql(u8, fmt, "#")) try writer.writeAll("\"");
+    }
 };
 
 pub fn create(vm: *Vm, typ: Type) Allocator.Error!*Object {
@@ -133,10 +146,8 @@ pub fn format(
     options: std.fmt.FormatOptions,
     writer: anytype,
 ) !void {
-    _ = options;
-
     if (std.mem.eql(u8, fmt, "#")) try writer.print("{*} ", .{self});
     switch (self.typ) {
-        .string => try writer.print("{s}", .{self.asString().bytes}),
+        .string => try self.asString().format(fmt, options, writer),
     }
 }

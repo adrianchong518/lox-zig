@@ -33,6 +33,11 @@ pub fn FixedCapacityStack(comptime T: type) type {
             return self.buffer[self.top];
         }
 
+        pub fn peek(self: Self, from_top: usize) T {
+            std.debug.assert(from_top < self.top);
+            return self.buffer[self.top - from_top - 1];
+        }
+
         pub fn items(self: *Self) []T {
             return self.buffer[0..self.top];
         }
