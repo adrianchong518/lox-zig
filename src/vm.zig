@@ -22,9 +22,9 @@ pub const Vm = struct {
     ip: usize,
 
     stack: FixedCapacityStack(Value),
-    strings: Table,
-    constant_strings: Table,
-    globals: Table,
+    strings: Object.String.HashMap(void),
+    constant_strings: Object.String.HashMap(usize),
+    globals: Object.String.HashMap(Value),
 
     objects: ?*Object,
 
@@ -41,9 +41,9 @@ pub const Vm = struct {
             .ip = 0,
 
             .stack = try FixedCapacityStack(Value).init(allocator, stack_max),
-            .strings = Table.init(allocator),
-            .constant_strings = Table.init(allocator),
-            .globals = Table.init(allocator),
+            .strings = Object.String.HashMap(void).init(allocator),
+            .constant_strings = Object.String.HashMap(usize).init(allocator),
+            .globals = Object.String.HashMap(Value).init(allocator),
 
             .objects = null,
         };
@@ -107,19 +107,19 @@ pub const Vm = struct {
             .get_global => |op| {
                 const name = self.chunk.constants.items[op.offset].object.asString();
                 const value = self.globals.get(name) orelse {
-                    try self.runtimeError("Undefined variable '{}'", .{Value.from(name)});
+                    try self.runtimeError("Undefined variable '{0}' ({0#})", .{Value.from(name)});
                     return error.RuntimePanic;
                 };
                 self.stack.push(value);
             },
             .set_global => |op| {
                 const name = self.chunk.constants.items[op.offset].object.asString();
-                const entry = self.globals.getEntry(name) orelse {
-                    try self.runtimeError("Undefined variable '{}'", .{Value.from(name)});
+                const value_ptr = self.globals.getPtr(name) orelse {
+                    try self.runtimeError("Undefined variable '{0}' ({0#})", .{Value.from(name)});
                     return error.RuntimePanic;
                 };
                 const value = self.stack.peek(0);
-                entry.value_ptr.* = value;
+                value_ptr.* = value;
             },
 
             .pop => _ = self.stack.pop(),
@@ -172,7 +172,11 @@ pub const Vm = struct {
             .multiply => try self.binaryOp(.@"*"),
             .divide => try self.binaryOp(.@"/"),
 
-            .print => try io.getStdOut().writer().print("{}\n", .{self.stack.pop()}),
+            .print => {
+                const value = self.stack.pop();
+                try io.getStdOut().writer().print("{}\n", .{value});
+                if (config.trace_exec) std.debug.print("{#}\n", .{value});
+            },
         }
 
         return null;

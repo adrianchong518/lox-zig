@@ -2,6 +2,7 @@ const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
 
+const hashBytes = @import("hash.zig").hashBytes;
 const Vm = @import("vm.zig").Vm;
 const Table = @import("Table.zig");
 
@@ -23,7 +24,31 @@ pub const Type = enum {
 pub const String = struct {
     object: Object,
     bytes: []const u8,
-    hash: u32,
+    hash: u64,
+
+    pub fn HashMap(comptime V: type) type {
+        return std.HashMap(*String, V, HashContext, std.hash_map.default_max_load_percentage);
+    }
+
+    pub const HashContext = struct {
+        pub fn hash(_: HashContext, key: *String) u64 {
+            return key.hash;
+        }
+
+        pub fn eql(_: HashContext, k1: *String, k2: *String) bool {
+            return k2.eql(k1);
+        }
+    };
+
+    pub const SliceContext = struct {
+        pub fn hash(_: SliceContext, key: []const u8) u64 {
+            return hashBytes(key);
+        }
+
+        pub fn eql(_: SliceContext, k1: []const u8, k2: *String) bool {
+            return k2.eqlSlice(k1);
+        }
+    };
 
     /// Create a new `String` object with ownership of `bytes` transferred. Caller owns the memory.
     /// Call `destroy` with the result to free memory.
@@ -46,7 +71,7 @@ pub const String = struct {
     }
 
     fn tryCreateIntern(vm: *Vm, bytes: []const u8) ?*String {
-        return vm.strings.getKey(bytes);
+        return vm.strings.getKeyAdapted(bytes, SliceContext{});
     }
 
     fn createAssumeNovel(vm: *Vm, bytes: []const u8) Allocator.Error!*String {
@@ -56,10 +81,10 @@ pub const String = struct {
         out.* = .{
             .object = object.*,
             .bytes = bytes,
-            .hash = Table.hash(bytes),
+            .hash = hashBytes(bytes),
         };
 
-        _ = try vm.strings.put(out, .nil);
+        try vm.strings.put(out, {});
 
         return out;
     }
@@ -70,29 +95,18 @@ pub const String = struct {
         vm.allocator.destroy(self);
     }
 
-    pub fn eql(self: *const String, other: anytype) bool {
-        const Other = @TypeOf(other);
-        switch (Other) {
-            *const Object, *Object, *const String, *String => {
-                return @ptrToInt(self) == @ptrToInt(other);
-            },
+    /// Check for equality between *String with simple pointer equality.
+    /// This can be done as all `String` instances are interned by `vm.strings`.
+    pub fn eql(self: *const String, other: *const String) bool {
+        return @ptrToInt(self) == @ptrToInt(other);
+    }
 
-            []const u8, []u8 => return mem.eql(u8, self.bytes, other),
-
-            else => {
-                @compileError("Cannot compare " ++ @typeName(String) ++ " with " ++
-                    @typeName(Other) ++ ".");
-            },
-        }
-        if (Other == *const Object or Other == *Object) {
-            return mem.eql(u8, self.bytes, other.asString().bytes);
-        } else if (Other == *const String or Other == *String) {
-            return mem.eql(u8, self.bytes, other.bytes);
-        } else if (Other == []const u8 or Other == []u8) {} else {}
+    pub fn eqlSlice(self: *const String, bytes: []const u8) bool {
+        return mem.eql(u8, self.bytes, bytes);
     }
 
     pub fn format(
-        self: *String,
+        self: *const String,
         comptime fmt: []const u8,
         options: std.fmt.FormatOptions,
         writer: anytype,
@@ -102,6 +116,40 @@ pub const String = struct {
         if (std.mem.eql(u8, fmt, "#")) try writer.writeAll("\"");
         try writer.print("{s}", .{self.bytes});
         if (std.mem.eql(u8, fmt, "#")) try writer.writeAll("\"");
+    }
+
+    test "compare String and a slice" {
+        var vm = try Vm.init(std.testing.allocator);
+        defer vm.deinit();
+
+        const string = try String.createCopy(&vm, "hello");
+        try std.testing.expect(string.eqlSlice("hello"));
+    }
+
+    test "HashMap sanity check" {
+        var vm = try Vm.init(std.testing.allocator);
+        defer vm.deinit();
+
+        const string = try String.createCopy(&vm, "hello");
+        var hashmap = Object.String.HashMap(void).init(std.testing.allocator);
+        defer hashmap.deinit();
+
+        try hashmap.put(string, {});
+
+        {
+            const result = hashmap.getKey(string);
+            try std.testing.expect(result.?.hash == hashBytes("hello"));
+        }
+
+        {
+            try std.testing.expect(hashmap.containsAdapted(
+                @as([]const u8, "hello"),
+                SliceContext{},
+            ));
+
+            const result = hashmap.getKeyAdapted(@as([]const u8, "pello"), SliceContext{});
+            try std.testing.expect(result == null);
+        }
     }
 };
 
@@ -130,24 +178,25 @@ pub fn asString(self: *Object) *String {
     return @fieldParentPtr(String, "object", self);
 }
 
-pub fn eql(self: *Object, other: anytype) bool {
-    if (@TypeOf(other) == *const Object or @TypeOf(other) == *const Object) {
-        if (self.typ != other.typ) return false;
-    }
+pub fn asConstString(self: *const Object) *const String {
+    std.debug.assert(self.isString());
+    return @fieldParentPtr(String, "object", self);
+}
 
+pub fn eql(self: *const Object, other: *const Object) bool {
     return switch (self.typ) {
-        .string => self.asString().eql(other),
+        .string => self.asConstString().eql(other.asConstString()),
     };
 }
 
 pub fn format(
-    self: *Object,
+    self: *const Object,
     comptime fmt: []const u8,
     options: std.fmt.FormatOptions,
     writer: anytype,
 ) !void {
     if (std.mem.eql(u8, fmt, "#")) try writer.print("{*} ", .{self});
     switch (self.typ) {
-        .string => try self.asString().format(fmt, options, writer),
+        .string => try self.asConstString().format(fmt, options, writer),
     }
 }

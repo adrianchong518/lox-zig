@@ -8,7 +8,7 @@ const File = std.fs.File;
 const config = @import("config");
 
 const debug = @import("debug.zig");
-const InterpretError = @import("root").InterpretError;
+const InterpretError = @import("main.zig").InterpretError;
 const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
 const Scanner = @import("scanner.zig").Scanner;
@@ -379,8 +379,8 @@ const Parser = struct {
     }
 
     fn identifierConstant(self: *Parser, name: []const u8) Allocator.Error!usize {
-        if (self.vm.constant_strings.getEntry(name)) |entry| {
-            return @floatToInt(usize, entry.value_ptr.number);
+        if (self.vm.constant_strings.getAdapted(name, Object.String.SliceContext{})) |offset| {
+            return offset;
         }
 
         const identifier = try Object.String.createCopy(self.vm, name);
