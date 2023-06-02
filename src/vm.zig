@@ -83,7 +83,10 @@ pub const Vm = struct {
             if (instruction) |inst| {
                 if (try self.runInstruction(inst)) |s| {
                     switch (s) {
-                        .stop => return,
+                        .stop => {
+                            std.debug.assert(self.stack.isEmpty());
+                            return;
+                        },
                     }
                 }
             }
@@ -117,6 +120,15 @@ pub const Vm = struct {
                 };
                 const value = self.stack.peek(0);
                 value_ptr.* = value;
+            },
+
+            .get_local => |op| {
+                const value = self.stack.items()[op.offset];
+                self.stack.push(value);
+            },
+            .set_local => |op| {
+                const value = self.stack.peek(0);
+                self.stack.items()[op.offset] = value;
             },
 
             .pop => _ = self.stack.pop(),

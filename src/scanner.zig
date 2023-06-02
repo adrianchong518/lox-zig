@@ -216,6 +216,10 @@ pub const Scanner = struct {
 };
 
 pub const Token = struct {
+    typ: Type,
+    lexeme: []const u8,
+    line: usize,
+
     pub const Type = enum(u8) {
         left_paren,
         right_paren,
@@ -262,9 +266,9 @@ pub const Token = struct {
         eof,
     };
 
-    typ: Type,
-    lexeme: []const u8,
-    line: usize,
+    pub fn eqlLexeme(self: Token, other: Token) bool {
+        return mem.eql(u8, self.lexeme, other.lexeme);
+    }
 };
 
 fn isIdentiferAlpha(c: u8) bool {

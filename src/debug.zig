@@ -39,6 +39,8 @@ pub fn disassembleInstruction(chunk: Chunk, offset: usize) usize {
         .define_global => |op| printConstant("OP_DEFINE_GLOBAL", chunk, op.offset),
         .get_global => |op| printConstant("OP_GET_GLOBAL", chunk, op.offset),
         .set_global => |op| printConstant("OP_SET_GLOBAL", chunk, op.offset),
+        .get_local => |op| printOffset("OP_GET_LOCAL", op.offset),
+        .set_local => |op| printOffset("OP_SET_LOCAL", op.offset),
 
         .pop => printSimple("OP_POP"),
 
@@ -67,14 +69,14 @@ fn printSimple(name: []const u8) void {
     std.debug.print("{s}\n", .{name});
 }
 
-fn printConstant(
-    name: []const u8,
-    chunk: Chunk,
-    constant_offset: usize,
-) void {
+fn printConstant(name: []const u8, chunk: Chunk, constant_offset: usize) void {
     std.debug.print("{s: <16} {: >4} {#}\n", .{
         name,
         constant_offset,
         chunk.constants.items[constant_offset],
     });
+}
+
+fn printOffset(name: []const u8, byte: usize) void {
+    std.debug.print("{s: <16} {: >4}\n", .{ name, byte });
 }

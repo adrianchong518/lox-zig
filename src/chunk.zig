@@ -11,6 +11,8 @@ pub const OpCodeTag = enum(u8) {
     define_global,
     get_global,
     set_global,
+    get_local,
+    set_local,
 
     pop,
 
@@ -41,6 +43,8 @@ pub const OpCode = union(OpCodeTag) {
     define_global: struct { offset: usize },
     get_global: struct { offset: usize },
     set_global: struct { offset: usize },
+    get_local: struct { offset: usize },
+    set_local: struct { offset: usize },
 
     pop,
 
@@ -110,6 +114,8 @@ pub const Chunk = struct {
             .define_global => .{ .define_global = .{ .offset = self.nextConstantOffset(offset) } },
             .get_global => .{ .get_global = .{ .offset = self.nextConstantOffset(offset) } },
             .set_global => .{ .set_global = .{ .offset = self.nextConstantOffset(offset) } },
+            .get_local => .{ .get_local = .{ .offset = self.nextConstantOffset(offset) } },
+            .set_local => .{ .set_local = .{ .offset = self.nextConstantOffset(offset) } },
 
             .pop => .pop,
 
@@ -168,6 +174,8 @@ pub const Chunk = struct {
             .define_global => |op| try self.writeOffset(op.offset, line),
             .get_global => |op| try self.writeOffset(op.offset, line),
             .set_global => |op| try self.writeOffset(op.offset, line),
+            .get_local => |op| try self.writeOffset(op.offset, line),
+            .set_local => |op| try self.writeOffset(op.offset, line),
 
             else => {},
         }

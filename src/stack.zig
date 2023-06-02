@@ -45,6 +45,10 @@ pub fn FixedCapacityStack(comptime T: type) type {
         pub fn clear(self: *Self) void {
             self.top = 0;
         }
+
+        pub fn isEmpty(self: Self) bool {
+            return self.top == 0;
+        }
     };
 }
 
