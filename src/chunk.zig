@@ -35,6 +35,7 @@ pub const OpCodeTag = enum(u8) {
 
     jump,
     jump_if_false,
+    loop,
 
     _,
 };
@@ -70,6 +71,7 @@ pub const OpCode = union(OpCodeTag) {
 
     jump: struct { offset: u16 = u16_placeholder },
     jump_if_false: struct { offset: u16 = u16_placeholder },
+    loop: struct { offset: u16 = u16_placeholder },
 
     const u16_placeholder: u16 = 0xaaaa;
 };
@@ -146,6 +148,7 @@ pub const Chunk = struct {
 
             .jump => .{ .jump = .{ .offset = self.nextOffsetU16(offset) } },
             .jump_if_false => .{ .jump_if_false = .{ .offset = self.nextOffsetU16(offset) } },
+            .loop => .{ .loop = .{ .offset = self.nextOffsetU16(offset) } },
 
             _ => null,
         };
@@ -195,6 +198,7 @@ pub const Chunk = struct {
 
             .jump => |op| try self.writeOffset(op.offset, line),
             .jump_if_false => |op| try self.writeOffset(op.offset, line),
+            .loop => |op| try self.writeOffset(op.offset, line),
 
             else => {},
         }

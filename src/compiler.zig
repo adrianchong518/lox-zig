@@ -288,6 +288,10 @@ const Parser = struct {
             try self.printStatement();
         } else if (try self.match(.@"if")) {
             try self.ifStatement();
+        } else if (try self.match(.@"while")) {
+            try self.whileStatement();
+        } else if (try self.match(.@"for")) {
+            try self.forStatement();
         } else if (try self.match(.left_brace)) {
             self.beginScope();
             try self.block();
@@ -323,6 +327,76 @@ const Parser = struct {
         if (try self.match(.@"else")) try self.statement();
 
         try self.patchJump(else_jump);
+    }
+
+    fn whileStatement(self: *Parser) Error!void {
+        const loop_start = self.currentChunk().code.items.len;
+
+        // condition
+        try self.consume(.left_paren, "Expect '(' after 'if'.");
+        try self.expression();
+        try self.consume(.right_paren, "Expect ')' after 'condition'.");
+
+        const exit_jump = try self.emitOpCode(.{ .jump_if_false = .{} });
+
+        // body
+        _ = try self.emitOpCode(.pop);
+        try self.statement();
+        _ = try self.emitLoop(loop_start);
+
+        try self.patchJump(exit_jump);
+        _ = try self.emitOpCode(.pop);
+    }
+
+    fn forStatement(self: *Parser) Error!void {
+        self.beginScope();
+
+        try self.consume(.left_paren, "Expect '(' after 'for'.");
+
+        // initializer clause
+        if (try self.match(.semicolon)) {
+            // No initializer
+        } else if (try self.match(.@"var")) {
+            try self.varDeclaration();
+        } else {
+            try self.expressionStatement();
+        }
+
+        // loop condition clause
+        var loop_start = self.currentChunk().code.items.len;
+        const exit_jump = if (!try self.match(.semicolon)) cond: {
+            try self.expression();
+            try self.consume(.semicolon, "Expect ';' after loop condition.");
+
+            const exit_jump = try self.emitOpCode(.{ .jump_if_false = .{} });
+            _ = try self.emitOpCode(.pop);
+
+            break :cond exit_jump;
+        } else null;
+
+        if (!try self.match(.right_paren)) {
+            const body_jump = try self.emitOpCode(.{ .jump = .{} });
+            const increment_start = self.currentChunk().code.items.len;
+            try self.expression();
+            _ = try self.emitOpCode(.pop);
+            try self.consume(.right_paren, "Expect ')' after for clauses.");
+
+            _ = try self.emitLoop(loop_start);
+            loop_start = increment_start;
+
+            try self.patchJump(body_jump);
+        }
+
+        // body
+        try self.statement();
+        _ = try self.emitLoop(loop_start);
+
+        if (exit_jump) |ej| {
+            try self.patchJump(ej);
+            _ = try self.emitOpCode(.pop);
+        }
+
+        try self.endScope();
     }
 
     fn expressionStatement(self: *Parser) Error!void {
@@ -561,12 +635,17 @@ const Parser = struct {
         }
     }
 
+    fn emitLoop(self: *Parser, loop_start: usize) Error!usize {
+        const offset = self.currentChunk().code.items.len - loop_start + 3;
+        if (offset > 0xffff) try self.errorAtPrev("Loop body too large.");
+
+        return self.emitOpCode(.{ .loop = .{ .offset = @truncate(u16, offset) } });
+    }
+
     fn patchJump(self: *Parser, jump_instruction_loc: usize) File.WriteError!void {
         const offset = self.currentChunk().code.items.len - jump_instruction_loc - 3;
 
-        if (offset > 0xff_ff) {
-            try self.errorAtPrev("Too much code to jump over.");
-        }
+        if (offset > 0xffff) try self.errorAtPrev("Too much code to jump over.");
 
         self.currentChunk().patchOffsetU16(@truncate(u16, offset), jump_instruction_loc + 1);
     }

@@ -142,8 +142,8 @@ pub const Vm = struct {
                 const a = self.stack.pop();
                 self.stack.push(Value.from(a.eql(b)));
             },
-            .greater => {},
-            .less => {},
+            .greater => try self.binaryOp(.@">"),
+            .less => try self.binaryOp(.@"<"),
 
             .not => self.stack.push(Value.from(!self.stack.pop().truthiness())),
             .negate => {
@@ -192,6 +192,9 @@ pub const Vm = struct {
             },
             .jump_if_false => |op| {
                 if (!self.stack.peek(0).truthiness()) self.ip += op.offset;
+            },
+            .loop => |op| {
+                self.ip -= op.offset;
             },
         }
 
