@@ -33,6 +33,9 @@ pub const OpCodeTag = enum(u8) {
 
     print,
 
+    jump,
+    jump_if_false,
+
     _,
 };
 
@@ -64,6 +67,11 @@ pub const OpCode = union(OpCodeTag) {
     divide,
 
     print,
+
+    jump: struct { offset: u16 = u16_placeholder },
+    jump_if_false: struct { offset: u16 = u16_placeholder },
+
+    const u16_placeholder: u16 = 0xaaaa;
 };
 
 pub const Chunk = struct {
@@ -110,12 +118,12 @@ pub const Chunk = struct {
         return switch (@intToEnum(OpCodeTag, instruction)) {
             .@"return" => .@"return",
 
-            .constant => .{ .constant = .{ .offset = self.nextConstantOffset(offset) } },
-            .define_global => .{ .define_global = .{ .offset = self.nextConstantOffset(offset) } },
-            .get_global => .{ .get_global = .{ .offset = self.nextConstantOffset(offset) } },
-            .set_global => .{ .set_global = .{ .offset = self.nextConstantOffset(offset) } },
-            .get_local => .{ .get_local = .{ .offset = self.nextConstantOffset(offset) } },
-            .set_local => .{ .set_local = .{ .offset = self.nextConstantOffset(offset) } },
+            .constant => .{ .constant = .{ .offset = self.nextOffsetUsize(offset) } },
+            .define_global => .{ .define_global = .{ .offset = self.nextOffsetUsize(offset) } },
+            .get_global => .{ .get_global = .{ .offset = self.nextOffsetUsize(offset) } },
+            .set_global => .{ .set_global = .{ .offset = self.nextOffsetUsize(offset) } },
+            .get_local => .{ .get_local = .{ .offset = self.nextOffsetUsize(offset) } },
+            .set_local => .{ .set_local = .{ .offset = self.nextOffsetUsize(offset) } },
 
             .pop => .pop,
 
@@ -136,11 +144,14 @@ pub const Chunk = struct {
 
             .print => .print,
 
+            .jump => .{ .jump = .{ .offset = self.nextOffsetU16(offset) } },
+            .jump_if_false => .{ .jump_if_false = .{ .offset = self.nextOffsetU16(offset) } },
+
             _ => null,
         };
     }
 
-    fn nextConstantOffset(self: Chunk, offset: *usize) usize {
+    fn nextOffsetUsize(self: Chunk, offset: *usize) usize {
         var constant_offset: usize = 0;
 
         while (self.read(offset.*) & 0b1000_0000 != 0) {
@@ -154,20 +165,25 @@ pub const Chunk = struct {
         return constant_offset;
     }
 
-    pub fn write(self: *Chunk, byte: u8, line: usize) Allocator.Error!void {
+    fn nextOffsetU16(self: Chunk, offset: *usize) u16 {
+        return @as(u16, self.next(offset)) << 8 | self.next(offset);
+    }
+
+    pub fn write(self: *Chunk, byte: u8, line: usize) Allocator.Error!usize {
         try self.code.append(byte);
 
         if (self.lines.getLastOrNull()) |line_start| {
             if (line_start.line == line) {
-                return;
+                return self.code.items.len - 1;
             }
         }
 
         try self.lines.append(.{ .offset = self.code.items.len - 1, .line = line });
+        return self.code.items.len - 1;
     }
 
-    pub fn writeOpCode(self: *Chunk, op_code: OpCode, line: usize) Allocator.Error!void {
-        try self.write(@enumToInt(op_code), line);
+    pub fn writeOpCode(self: *Chunk, op_code: OpCode, line: usize) Allocator.Error!usize {
+        const loc = try self.write(@enumToInt(op_code), line);
 
         switch (op_code) {
             .constant => |op| try self.writeOffset(op.offset, line),
@@ -177,23 +193,46 @@ pub const Chunk = struct {
             .get_local => |op| try self.writeOffset(op.offset, line),
             .set_local => |op| try self.writeOffset(op.offset, line),
 
+            .jump => |op| try self.writeOffset(op.offset, line),
+            .jump_if_false => |op| try self.writeOffset(op.offset, line),
+
             else => {},
         }
+
+        return loc;
     }
 
-    fn writeOffset(self: *Chunk, offset: usize, line: usize) Allocator.Error!void {
-        if (offset > 0b0111_1111) {
-            try self.writeLongOffset(offset >> 7, line);
+    fn writeOffset(self: *Chunk, offset: anytype, line: usize) Allocator.Error!void {
+        switch (@TypeOf(offset)) {
+            usize => try self.writeOffsetUsize(offset, line),
+            u16 => try self.writeOffsetU16(offset, line),
+            else => @compileError("Cannot write offset of type: " ++ @typeName(@TypeOf(offset))),
         }
-
-        try self.write(@truncate(u8, offset & 0b0111_1111), line);
     }
 
-    fn writeLongOffset(self: *Chunk, offset: usize, line: usize) Allocator.Error!void {
+    fn writeOffsetUsize(self: *Chunk, offset: usize, line: usize) Allocator.Error!void {
         if (offset > 0b0111_1111) {
-            try self.writeLongOffset(offset >> 7, line);
+            try self.writeLongOffsetUsize(offset >> 7, line);
         }
-        try self.write(@truncate(u8, (offset & 0b0111_1111) | 0b1000_0000), line);
+
+        _ = try self.write(@truncate(u8, offset & 0b0111_1111), line);
+    }
+
+    fn writeLongOffsetUsize(self: *Chunk, offset: usize, line: usize) Allocator.Error!void {
+        if (offset > 0b0111_1111) {
+            try self.writeLongOffsetUsize(offset >> 7, line);
+        }
+        _ = try self.write(@truncate(u8, (offset & 0b0111_1111) | 0b1000_0000), line);
+    }
+
+    fn writeOffsetU16(self: *Chunk, offset: u16, line: usize) Allocator.Error!void {
+        _ = try self.write(@truncate(u8, offset >> 8), line);
+        _ = try self.write(@truncate(u8, offset), line);
+    }
+
+    pub fn patchOffsetU16(self: *Chunk, offset: u16, loc: usize) void {
+        self.code.items[loc] = @truncate(u8, offset >> 8);
+        self.code.items[loc + 1] = @truncate(u8, offset);
     }
 
     pub fn addConstant(self: *Chunk, value: anytype) Allocator.Error!usize {
@@ -202,6 +241,8 @@ pub const Chunk = struct {
     }
 
     pub fn getLine(self: Chunk, offset: usize) usize {
+        std.debug.assert(self.lines.items.len > 0);
+
         var start: usize = 0;
         var end = self.lines.items.len - 1;
 

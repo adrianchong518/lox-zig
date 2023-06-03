@@ -186,6 +186,13 @@ pub const Vm = struct {
                 try io.getStdOut().writer().print("{}\n", .{value});
                 if (config.trace_exec) std.debug.print("{#}\n", .{value});
             },
+
+            .jump => |op| {
+                self.ip += op.offset;
+            },
+            .jump_if_false => |op| {
+                if (!self.stack.peek(0).truthiness()) self.ip += op.offset;
+            },
         }
 
         return null;

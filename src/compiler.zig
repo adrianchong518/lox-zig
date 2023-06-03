@@ -197,7 +197,7 @@ const Parser = struct {
     }
 
     fn end(self: *Parser) Error!void {
-        try self.emitOpCode(.@"return");
+        _ = try self.emitOpCode(.@"return");
 
         if (config.print_code and !self.had_error) {
             debug.disassemble(self.currentChunk().*, "code");
@@ -220,7 +220,7 @@ const Parser = struct {
         if (try self.match(.equal)) {
             try self.expression();
         } else {
-            try self.emitOpCode(.nil);
+            _ = try self.emitOpCode(.nil);
         }
 
         try self.consume(.semicolon, "Expect ';' after variable declaration.");
@@ -264,7 +264,7 @@ const Parser = struct {
         }
 
         const offset = try self.stringConstant(global.?.lexeme);
-        try self.emitOpCode(.{ .define_global = .{ .offset = offset } });
+        _ = try self.emitOpCode(.{ .define_global = .{ .offset = offset } });
     }
 
     fn resolveLocal(self: *Parser, name: Token) Error!?usize {
@@ -286,6 +286,8 @@ const Parser = struct {
     fn statement(self: *Parser) Error!void {
         if (try self.match(.print)) {
             try self.printStatement();
+        } else if (try self.match(.@"if")) {
+            try self.ifStatement();
         } else if (try self.match(.left_brace)) {
             self.beginScope();
             try self.block();
@@ -298,13 +300,35 @@ const Parser = struct {
     fn printStatement(self: *Parser) Error!void {
         try self.expression();
         try self.consume(.semicolon, "Expect ';' after value.");
-        try self.emitOpCode(.print);
+        _ = try self.emitOpCode(.print);
+    }
+
+    fn ifStatement(self: *Parser) Error!void {
+        // condition
+        try self.consume(.left_paren, "Expect '(' after 'if'.");
+        try self.expression();
+        try self.consume(.right_paren, "Expect ')' after 'condition'.");
+
+        const then_jump = try self.emitOpCode(.{ .jump_if_false = .{} });
+
+        // then branch
+        _ = try self.emitOpCode(.pop);
+        try self.statement();
+        const else_jump = try self.emitOpCode(.{ .jump = .{} });
+
+        try self.patchJump(then_jump);
+
+        // else branch
+        _ = try self.emitOpCode(.pop);
+        if (try self.match(.@"else")) try self.statement();
+
+        try self.patchJump(else_jump);
     }
 
     fn expressionStatement(self: *Parser) Error!void {
         try self.expression();
         try self.consume(.semicolon, "Expect ';' after expression.");
-        try self.emitOpCode(.pop);
+        _ = try self.emitOpCode(.pop);
     }
 
     fn expression(self: *Parser) Error!void {
@@ -330,7 +354,7 @@ const Parser = struct {
         while (self.current_compiler.locals.getLastOrNull()) |local| {
             if (local.depth <= self.current_compiler.scope_depth) break;
 
-            try self.emitOpCode(.pop);
+            _ = try self.emitOpCode(.pop);
             _ = self.current_compiler.locals.pop();
         }
     }
@@ -341,38 +365,29 @@ const Parser = struct {
 
     fn number(self: *Parser, _: bool) Error!void {
         const value = fmt.parseFloat(f64, self.previous.lexeme) catch unreachable;
-        try self.emitConstant(value);
+        _ = try self.emitConstant(value);
     }
 
     fn string(self: *Parser, _: bool) Error!void {
         const bytes = self.previous.lexeme[1 .. self.previous.lexeme.len - 1];
-        try self.emitStringConstant(bytes);
+        _ = try self.emitStringConstant(bytes);
     }
 
     fn variable(self: *Parser, can_assign: bool) Error!void {
         const name = self.previous;
         if (try self.resolveLocal(name)) |offset| {
-            try self.emitVariable(
+            _ = try self.emitVariable(
                 .{ .get_local = .{ .offset = offset } },
                 .{ .set_local = .{ .offset = offset } },
                 can_assign,
             );
         } else {
             const offset = try self.stringConstant(name.lexeme);
-            try self.emitVariable(
+            _ = try self.emitVariable(
                 .{ .get_global = .{ .offset = offset } },
                 .{ .set_global = .{ .offset = offset } },
                 can_assign,
             );
-        }
-    }
-
-    fn emitVariable(self: *Parser, get_op: OpCode, set_op: OpCode, can_assign: bool) Error!void {
-        if (can_assign and try self.match(.equal)) {
-            try self.expression();
-            try self.emitOpCode(set_op);
-        } else {
-            try self.emitOpCode(get_op);
         }
     }
 
@@ -384,8 +399,8 @@ const Parser = struct {
 
         // Emit the operator instruction
         switch (op_type) {
-            .bang => try self.emitOpCode(.not),
-            .minus => try self.emitOpCode(.negate),
+            .bang => _ = try self.emitOpCode(.not),
+            .minus => _ = try self.emitOpCode(.negate),
             else => unreachable,
         }
     }
@@ -396,25 +411,25 @@ const Parser = struct {
         try self.parsePrecedence(rule.precedence.next());
 
         switch (tok_type) {
-            .plus => try self.emitOpCode(.add),
-            .minus => try self.emitOpCode(.subtract),
-            .star => try self.emitOpCode(.multiply),
-            .slash => try self.emitOpCode(.divide),
+            .plus => _ = try self.emitOpCode(.add),
+            .minus => _ = try self.emitOpCode(.subtract),
+            .star => _ = try self.emitOpCode(.multiply),
+            .slash => _ = try self.emitOpCode(.divide),
 
-            .equal_equal => try self.emitOpCode(.equal),
-            .greater => try self.emitOpCode(.greater),
-            .less => try self.emitOpCode(.less),
+            .equal_equal => _ = try self.emitOpCode(.equal),
+            .greater => _ = try self.emitOpCode(.greater),
+            .less => _ = try self.emitOpCode(.less),
             .bang_equal => {
-                try self.emitOpCode(.equal);
-                try self.emitOpCode(.not);
+                _ = try self.emitOpCode(.equal);
+                _ = try self.emitOpCode(.not);
             },
             .greater_equal => {
-                try self.emitOpCode(.less);
-                try self.emitOpCode(.not);
+                _ = try self.emitOpCode(.less);
+                _ = try self.emitOpCode(.not);
             },
             .less_equal => {
-                try self.emitOpCode(.greater);
-                try self.emitOpCode(.not);
+                _ = try self.emitOpCode(.greater);
+                _ = try self.emitOpCode(.not);
             },
 
             else => unreachable,
@@ -423,9 +438,9 @@ const Parser = struct {
 
     fn literal(self: *Parser, _: bool) Error!void {
         switch (self.previous.typ) {
-            .nil => try self.emitOpCode(.nil),
-            .true => try self.emitOpCode(.true),
-            .false => try self.emitOpCode(.false),
+            .nil => _ = try self.emitOpCode(.nil),
+            .true => _ = try self.emitOpCode(.true),
+            .false => _ = try self.emitOpCode(.false),
             else => unreachable,
         }
     }
@@ -502,25 +517,40 @@ const Parser = struct {
         }
     }
 
-    fn emit(self: *Parser, byte: u8) Allocator.Error!void {
-        try self.currentChunk().write(byte, self.previous.line);
+    fn emitOpCode(self: *Parser, op_code: OpCode) Allocator.Error!usize {
+        return self.currentChunk().writeOpCode(op_code, self.previous.line);
     }
 
-    fn emitOpCode(self: *Parser, op_code: OpCode) Allocator.Error!void {
-        try self.currentChunk().writeOpCode(op_code, self.previous.line);
-    }
-
-    fn emitConstant(self: *Parser, value: anytype) Allocator.Error!void {
+    fn emitConstant(self: *Parser, value: anytype) Allocator.Error!usize {
         const chunk = self.currentChunk();
         const offset = try chunk.addConstant(value);
-        try chunk.writeOpCode(.{ .constant = .{ .offset = offset } }, self.previous.line);
+        return chunk.writeOpCode(.{ .constant = .{ .offset = offset } }, self.previous.line);
     }
 
-    fn emitStringConstant(self: *Parser, bytes: []const u8) Allocator.Error!void {
+    fn emitStringConstant(self: *Parser, bytes: []const u8) Allocator.Error!usize {
         const offset = try self.stringConstant(bytes);
-        try self
+        return self
             .currentChunk()
             .writeOpCode(.{ .constant = .{ .offset = offset } }, self.previous.line);
+    }
+
+    fn emitVariable(self: *Parser, get_op: OpCode, set_op: OpCode, can_assign: bool) Error!usize {
+        if (can_assign and try self.match(.equal)) {
+            try self.expression();
+            return self.emitOpCode(set_op);
+        } else {
+            return self.emitOpCode(get_op);
+        }
+    }
+
+    fn patchJump(self: *Parser, jump_instruction_loc: usize) File.WriteError!void {
+        const offset = self.currentChunk().code.items.len - jump_instruction_loc - 3;
+
+        if (offset > 0xff_ff) {
+            try self.errorAtPrev("Too much code to jump over.");
+        }
+
+        self.currentChunk().patchOffsetU16(@truncate(u16, offset), jump_instruction_loc + 1);
     }
 
     fn stringConstant(self: *Parser, bytes: []const u8) Allocator.Error!usize {

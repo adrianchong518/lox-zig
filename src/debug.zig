@@ -32,6 +32,8 @@ pub fn disassembleInstruction(chunk: Chunk, offset: usize) usize {
         return new_offset;
     };
 
+    std.debug.print("{x:0>2} ", .{@enumToInt(instruction)});
+
     switch (instruction) {
         .@"return" => printSimple("OP_RETURN"),
 
@@ -60,6 +62,9 @@ pub fn disassembleInstruction(chunk: Chunk, offset: usize) usize {
         .divide => printSimple("OP_DIVIDE"),
 
         .print => printSimple("OP_PRINT"),
+
+        .jump => |op| printJump("OP_JUMP", offset, true, op.offset),
+        .jump_if_false => |op| printJump("OP_JUMP_IF_FALSE", offset, true, op.offset),
     }
 
     return new_offset;
@@ -79,4 +84,10 @@ fn printConstant(name: []const u8, chunk: Chunk, constant_offset: usize) void {
 
 fn printOffset(name: []const u8, byte: usize) void {
     std.debug.print("{s: <16} {: >4}\n", .{ name, byte });
+}
+
+fn printJump(name: []const u8, instruction_offset: usize, is_forward: bool, offset: u16) void {
+    const target =
+        if (is_forward) instruction_offset + 3 + offset else instruction_offset + 3 - offset;
+    std.debug.print("{s: <16} {: >4} -> {}\n", .{ name, instruction_offset, target });
 }
