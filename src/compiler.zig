@@ -104,7 +104,7 @@ const ParseRule = struct {
         r.set(.string, .{ .prefix = Parser.string, .infix = null, .precedence = .none });
         r.set(.number, .{ .prefix = Parser.number, .infix = null, .precedence = .none });
 
-        r.set(.@"and", .{ .prefix = null, .infix = null, .precedence = .none });
+        r.set(.@"and", .{ .prefix = null, .infix = Parser.@"and", .precedence = .@"and" });
         r.set(.class, .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.@"else", .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.false, .{ .prefix = Parser.literal, .infix = null, .precedence = .none });
@@ -112,7 +112,7 @@ const ParseRule = struct {
         r.set(.fun, .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.@"if", .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.nil, .{ .prefix = Parser.literal, .infix = null, .precedence = .none });
-        r.set(.@"or", .{ .prefix = null, .infix = null, .precedence = .none });
+        r.set(.@"or", .{ .prefix = null, .infix = Parser.@"or", .precedence = .@"or" });
         r.set(.print, .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.@"return", .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.super, .{ .prefix = null, .infix = null, .precedence = .none });
@@ -389,6 +389,24 @@ const Parser = struct {
                 can_assign,
             );
         }
+    }
+
+    fn @"and"(self: *Parser, _: bool) Error!void {
+        const end_jump = try self.emitOpCode(.{ .jump_if_false = .{} });
+        _ = try self.emitOpCode(.pop);
+        try self.parsePrecedence(.@"and");
+        try self.patchJump(end_jump);
+    }
+
+    fn @"or"(self: *Parser, _: bool) Error!void {
+        const else_jump = try self.emitOpCode(.{ .jump_if_false = .{} });
+        const end_jump = try self.emitOpCode(.{ .jump = .{} });
+        try self.patchJump(else_jump);
+
+        _ = try self.emitOpCode(.pop);
+        try self.parsePrecedence(.@"or");
+
+        try self.patchJump(end_jump);
     }
 
     fn unary(self: *Parser, _: bool) Error!void {
