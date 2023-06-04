@@ -171,6 +171,10 @@ const Parser = struct {
     current: Token = undefined,
 
     current_compiler: *Compiler,
+    innermostLoop: ?struct {
+        start: usize = 0,
+        scope_depth: usize = 0,
+    } = null,
 
     compiling_chunk: *Chunk,
     constant_strings: Object.String.HashMap(usize),
@@ -292,6 +296,8 @@ const Parser = struct {
             try self.whileStatement();
         } else if (try self.match(.@"for")) {
             try self.forStatement();
+        } else if (try self.match(.@"continue")) {
+            try self.continueStatement();
         } else if (try self.match(.left_brace)) {
             self.beginScope();
             try self.block();
@@ -330,7 +336,11 @@ const Parser = struct {
     }
 
     fn whileStatement(self: *Parser) Error!void {
-        const loop_start = self.currentChunk().code.items.len;
+        const surroundingLoop = self.innermostLoop;
+        self.innermostLoop = .{
+            .start = self.currentChunk().code.items.len,
+            .scope_depth = self.current_compiler.scope_depth,
+        };
 
         // condition
         try self.consume(.left_paren, "Expect '(' after 'if'.");
@@ -342,10 +352,12 @@ const Parser = struct {
         // body
         _ = try self.emitOpCode(.pop);
         try self.statement();
-        _ = try self.emitLoop(loop_start);
+        _ = try self.emitLoop(self.innermostLoop.?.start);
 
         try self.patchJump(exit_jump);
         _ = try self.emitOpCode(.pop);
+
+        self.innermostLoop = surroundingLoop;
     }
 
     fn forStatement(self: *Parser) Error!void {
@@ -362,8 +374,13 @@ const Parser = struct {
             try self.expressionStatement();
         }
 
+        const surroundingLoop = self.innermostLoop;
+        self.innermostLoop = .{
+            .start = self.currentChunk().code.items.len,
+            .scope_depth = self.current_compiler.scope_depth,
+        };
+
         // loop condition clause
-        var loop_start = self.currentChunk().code.items.len;
         const exit_jump = if (!try self.match(.semicolon)) cond: {
             try self.expression();
             try self.consume(.semicolon, "Expect ';' after loop condition.");
@@ -381,22 +398,37 @@ const Parser = struct {
             _ = try self.emitOpCode(.pop);
             try self.consume(.right_paren, "Expect ')' after for clauses.");
 
-            _ = try self.emitLoop(loop_start);
-            loop_start = increment_start;
+            _ = try self.emitLoop(self.innermostLoop.?.start);
+            self.innermostLoop.?.start = increment_start;
 
             try self.patchJump(body_jump);
         }
 
         // body
         try self.statement();
-        _ = try self.emitLoop(loop_start);
+        _ = try self.emitLoop(self.innermostLoop.?.start);
 
         if (exit_jump) |ej| {
             try self.patchJump(ej);
             _ = try self.emitOpCode(.pop);
         }
 
+        self.innermostLoop = surroundingLoop;
         try self.endScope();
+    }
+
+    fn continueStatement(self: *Parser) Error!void {
+        try self.consume(.semicolon, "Expect ';' after 'continue'.");
+
+        if (self.innermostLoop) |loop| {
+            while (self.current_compiler.locals.getLastOrNull()) |local| {
+                if (local.depth <= self.current_compiler.scope_depth) break;
+                _ = try self.emitOpCode(.pop);
+            }
+            _ = try self.emitLoop(loop.start);
+        } else {
+            try self.errorAtPrev("Can't use 'continue' outside of a loop.");
+        }
     }
 
     fn expressionStatement(self: *Parser) Error!void {

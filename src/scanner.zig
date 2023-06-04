@@ -2,6 +2,63 @@ const std = @import("std");
 const mem = std.mem;
 const isDigit = std.ascii.isDigit;
 
+pub const Token = struct {
+    typ: Type,
+    lexeme: []const u8,
+    line: usize,
+
+    pub const Type = enum(u8) {
+        left_paren,
+        right_paren,
+        left_brace,
+        right_brace,
+        comma,
+        dot,
+        minus,
+        plus,
+        semicolon,
+        slash,
+        star,
+
+        bang,
+        bang_equal,
+        equal,
+        equal_equal,
+        greater,
+        greater_equal,
+        less,
+        less_equal,
+
+        identifier,
+        string,
+        number,
+
+        @"and",
+        class,
+        @"continue",
+        @"else",
+        false,
+        @"for",
+        fun,
+        @"if",
+        nil,
+        @"or",
+        print,
+        @"return",
+        super,
+        this,
+        true,
+        @"var",
+        @"while",
+        @"error",
+        eof,
+    };
+
+    pub fn eqlLexeme(self: Token, other: Token) bool {
+        return mem.eql(u8, self.lexeme, other.lexeme);
+    }
+};
+
 pub const Scanner = struct {
     source: []const u8,
     start: usize,
@@ -102,7 +159,6 @@ pub const Scanner = struct {
     fn identifierType(self: *Scanner) Token.Type {
         switch (self.source[self.start]) {
             'a' => return self.checkKeyword(1, "nd", .@"and"),
-            'c' => return self.checkKeyword(1, "lass", .class),
             'e' => return self.checkKeyword(1, "lse", .@"else"),
             'i' => return self.checkKeyword(1, "f", .@"if"),
             'n' => return self.checkKeyword(1, "il", .nil),
@@ -112,6 +168,16 @@ pub const Scanner = struct {
             's' => return self.checkKeyword(1, "uper", .super),
             'v' => return self.checkKeyword(1, "ar", .@"var"),
             'w' => return self.checkKeyword(1, "hile", .@"while"),
+
+            'c' => {
+                if (self.tokenLength() > 1) {
+                    switch (self.source[self.start + 1]) {
+                        'l' => return self.checkKeyword(2, "ass", .class),
+                        'o' => return self.checkKeyword(2, "ntinue", .@"continue"),
+                        else => {},
+                    }
+                }
+            },
 
             'f' => {
                 if (self.tokenLength() > 1) {
@@ -212,62 +278,6 @@ pub const Scanner = struct {
                 else => break,
             }
         }
-    }
-};
-
-pub const Token = struct {
-    typ: Type,
-    lexeme: []const u8,
-    line: usize,
-
-    pub const Type = enum(u8) {
-        left_paren,
-        right_paren,
-        left_brace,
-        right_brace,
-        comma,
-        dot,
-        minus,
-        plus,
-        semicolon,
-        slash,
-        star,
-
-        bang,
-        bang_equal,
-        equal,
-        equal_equal,
-        greater,
-        greater_equal,
-        less,
-        less_equal,
-
-        identifier,
-        string,
-        number,
-
-        @"and",
-        class,
-        @"else",
-        false,
-        @"for",
-        fun,
-        @"if",
-        nil,
-        @"or",
-        print,
-        @"return",
-        super,
-        this,
-        true,
-        @"var",
-        @"while",
-        @"error",
-        eof,
-    };
-
-    pub fn eqlLexeme(self: Token, other: Token) bool {
-        return mem.eql(u8, self.lexeme, other.lexeme);
     }
 };
 
