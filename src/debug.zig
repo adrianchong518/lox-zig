@@ -5,7 +5,7 @@ const OpCode = @import("chunk.zig").OpCode;
 const OpCodeLabel = @import("chunk.zig").OpCodeLabel;
 const Value = @import("value.zig").Value;
 
-pub fn disassemble(chunk: Chunk, name: []const u8) void {
+pub fn disassemble(chunk: Chunk, name: anytype) void {
     std.debug.print("== {s} ==\n", .{name});
 
     var offset: usize = 0;
@@ -35,14 +35,15 @@ pub fn disassembleInstruction(chunk: Chunk, offset: usize) usize {
     std.debug.print("{x:0>2} ", .{@enumToInt(instruction)});
 
     switch (instruction) {
+        .call => |op| printInteger("OP_CALL", op.arg_count),
         .@"return" => printSimple("OP_RETURN"),
 
         .constant => |op| printConstant("OP_CONSTANT", chunk, op.offset),
         .define_global => |op| printConstant("OP_DEFINE_GLOBAL", chunk, op.offset),
         .get_global => |op| printConstant("OP_GET_GLOBAL", chunk, op.offset),
         .set_global => |op| printConstant("OP_SET_GLOBAL", chunk, op.offset),
-        .get_local => |op| printOffset("OP_GET_LOCAL", op.offset),
-        .set_local => |op| printOffset("OP_SET_LOCAL", op.offset),
+        .get_local => |op| printInteger("OP_GET_LOCAL", op.offset),
+        .set_local => |op| printInteger("OP_SET_LOCAL", op.offset),
 
         .pop => printSimple("OP_POP"),
 
@@ -83,7 +84,7 @@ fn printConstant(name: []const u8, chunk: Chunk, constant_offset: usize) void {
     });
 }
 
-fn printOffset(name: []const u8, byte: usize) void {
+fn printInteger(name: []const u8, byte: anytype) void {
     std.debug.print("{s: <16} {: >4}\n", .{ name, byte });
 }
 

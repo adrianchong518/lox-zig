@@ -9,6 +9,8 @@ pub fn FixedCapacityStack(comptime T: type) type {
         buffer: []T,
         top: usize,
 
+        pub const Error = error{OutOfBounds};
+
         pub fn init(allocator: Allocator, capacity: usize) Allocator.Error!Self {
             const buffer = try allocator.alloc(T, capacity);
             return .{
@@ -28,14 +30,39 @@ pub fn FixedCapacityStack(comptime T: type) type {
             self.top += 1;
         }
 
+        pub fn tryPush(self: *Self, value: T) Error!void {
+            if (self.top == self.buffer.len) return error.OutOfBounds;
+            self.push(value);
+        }
+
         pub fn pop(self: *Self) T {
             self.top -= 1;
             return self.buffer[self.top];
         }
 
-        pub fn peek(self: Self, from_top: usize) T {
+        pub fn tryPop(self: *Self) ?T {
+            if (self.top <= 0) return null;
+
+            self.top -= 1;
+            return self.buffer[self.top];
+        }
+
+        pub fn discardUntil(self: *Self, new_top: usize) void {
+            std.debug.assert(new_top <= self.top);
+            self.top = new_top;
+        }
+
+        pub fn peekIndex(self: Self, from_top: usize) usize {
             std.debug.assert(from_top < self.top);
-            return self.buffer[self.top - from_top - 1];
+            return self.top - from_top - 1;
+        }
+
+        pub fn peek(self: Self, from_top: usize) T {
+            return self.peekPtr(from_top).*;
+        }
+
+        pub fn peekPtr(self: Self, from_top: usize) *T {
+            return &self.buffer[self.peekIndex(from_top)];
         }
 
         pub fn items(self: *Self) []T {
@@ -48,6 +75,10 @@ pub fn FixedCapacityStack(comptime T: type) type {
 
         pub fn isEmpty(self: Self) bool {
             return self.top == 0;
+        }
+
+        pub fn count(self: Self) usize {
+            return self.top;
         }
     };
 }

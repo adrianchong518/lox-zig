@@ -74,9 +74,9 @@ pub const Value = union(enum) {
         if (std.mem.eql(u8, fmt, "#")) try writer.writeAll(">");
     }
 
-    pub fn isString(self: Value) bool {
+    pub fn isObjectType(self: Value, typ: Object.Type) bool {
         return switch (self) {
-            .object => |o| o.isString(),
+            .object => |o| o.typ == typ,
             else => false,
         };
     }

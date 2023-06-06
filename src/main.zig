@@ -48,7 +48,7 @@ fn repl(allocator: Allocator) InterpretError!void {
             continue;
         } orelse return;
 
-        interpret(allocator, source, &vm) catch {};
+        interpret(source, &vm) catch {};
     }
 }
 
@@ -73,19 +73,16 @@ fn runFile(allocator: Allocator, file_path: []const u8) InterpretError!void {
     var vm = try Vm.init(allocator);
     defer vm.deinit();
 
-    interpret(allocator, source, &vm) catch |err| switch (err) {
+    interpret(source, &vm) catch |err| switch (err) {
         error.CompileFailed => process.exit(65),
         error.RuntimePanic => process.exit(70),
         else => |e| return e,
     };
 }
 
-fn interpret(allocator: Allocator, source: []const u8, vm: *Vm) InterpretError!void {
-    var chunk = Chunk.init(allocator);
-    defer chunk.deinit();
-
-    try compiler.compile(source, vm, &chunk);
-    try vm.interpret(&chunk);
+fn interpret(source: []const u8, vm: *Vm) InterpretError!void {
+    const function = try compiler.compile(source, vm);
+    try vm.interpret(function);
 }
 
 test {

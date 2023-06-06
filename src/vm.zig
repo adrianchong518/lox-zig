@@ -18,36 +18,51 @@ const Object = @import("Object.zig");
 pub const Vm = struct {
     allocator: Allocator,
 
-    chunk: *Chunk,
-    ip: usize,
-
     stack: FixedCapacityStack(Value),
     strings: Object.String.HashMap(void),
     globals: Object.String.HashMap(Value),
 
+    frames: FixedCapacityStack(CallFrame),
+
     objects: ?*Object,
 
-    const stack_max = 256;
+    const stack_max = frames_max * (std.math.maxInt(u8) + 1);
+    const frames_max = 64;
 
     const Error = File.WriteError || Allocator.Error || error{RuntimePanic};
     const Status = ?enum { stop };
+
+    const CallFrame = struct {
+        function: *Object.Function,
+        ip: usize = 0,
+        slots_start: usize,
+
+        fn chunk(self: CallFrame) Chunk {
+            return self.function.chunk;
+        }
+
+        fn slots(self: CallFrame, vm: *Vm) []Value {
+            return vm.stack.items()[self.slots_start..];
+        }
+    };
 
     pub fn init(allocator: Allocator) Allocator.Error!Vm {
         return .{
             .allocator = allocator,
 
-            .chunk = undefined,
-            .ip = 0,
-
             .stack = try FixedCapacityStack(Value).init(allocator, stack_max),
             .strings = Object.String.HashMap(void).init(allocator),
             .globals = Object.String.HashMap(Value).init(allocator),
+
+            .frames = try FixedCapacityStack(CallFrame).init(allocator, frames_max),
 
             .objects = null,
         };
     }
 
     pub fn deinit(self: *Vm) void {
+        self.frames.deinit();
+
         self.globals.deinit();
         self.strings.deinit();
         self.stack.deinit();
@@ -62,26 +77,28 @@ pub const Vm = struct {
         self.* = undefined;
     }
 
-    pub fn interpret(self: *Vm, chunk: *Chunk) Error!void {
-        self.chunk = chunk;
-        self.ip = 0;
+    pub fn interpret(self: *Vm, function: *Object.Function) Error!void {
+        self.stack.push(Value.from(function));
+        try self.call(function, 0);
+
         try self.run();
     }
 
     fn run(self: *Vm) Error!void {
         while (true) {
+            const frame = self.frames.peekPtr(0);
             if (config.trace_exec) {
                 std.debug.print("           ", .{});
                 for (self.stack.items()) |i| {
                     std.debug.print(" [ {#} ]", .{i});
                 }
                 std.debug.print("\n", .{});
-                _ = debug.disassembleInstruction(self.chunk.*, self.ip);
+                _ = debug.disassembleInstruction(frame.chunk(), frame.ip);
             }
 
-            const instruction = self.chunk.nextOpCode(&self.ip);
+            const instruction = frame.chunk().nextOpCode(&frame.ip);
             if (instruction) |inst| {
-                if (try self.runInstruction(inst)) |s| {
+                if (try self.runInstruction(inst, frame)) |s| {
                     switch (s) {
                         .stop => {
                             std.debug.assert(self.stack.isEmpty());
@@ -93,19 +110,34 @@ pub const Vm = struct {
         }
     }
 
-    fn runInstruction(self: *Vm, instruction: OpCode) Error!Status {
+    fn runInstruction(self: *Vm, instruction: OpCode, frame: *CallFrame) Error!Status {
         switch (instruction) {
-            .@"return" => return .stop,
+            .call => |op| {
+                const callee = self.stack.peek(op.arg_count);
+                try self.callValue(callee, op.arg_count);
+            },
 
-            .constant => |op| self.stack.push(self.chunk.constants.items[op.offset]),
+            .@"return" => {
+                const result = self.stack.pop();
+                _ = self.frames.pop();
+                if (self.frames.count() == 0) {
+                    _ = self.stack.pop();
+                    return .stop;
+                }
+
+                self.stack.discardUntil(frame.slots_start);
+                self.stack.push(result);
+            },
+
+            .constant => |op| self.stack.push(frame.chunk().constants.items[op.offset]),
 
             .define_global => |op| {
-                const name = self.chunk.constants.items[op.offset].object.asString();
+                const name = frame.chunk().constants.items[op.offset].object.asString();
                 _ = try self.globals.put(name, self.stack.peek(0));
                 _ = self.stack.pop();
             },
             .get_global => |op| {
-                const name = self.chunk.constants.items[op.offset].object.asString();
+                const name = frame.chunk().constants.items[op.offset].object.asString();
                 const value = self.globals.get(name) orelse {
                     try self.runtimeError("Undefined variable '{0}' ({0#})", .{Value.from(name)});
                     return error.RuntimePanic;
@@ -113,7 +145,7 @@ pub const Vm = struct {
                 self.stack.push(value);
             },
             .set_global => |op| {
-                const name = self.chunk.constants.items[op.offset].object.asString();
+                const name = frame.chunk().constants.items[op.offset].object.asString();
                 const value_ptr = self.globals.getPtr(name) orelse {
                     try self.runtimeError("Undefined variable '{0}' ({0#})", .{Value.from(name)});
                     return error.RuntimePanic;
@@ -123,12 +155,12 @@ pub const Vm = struct {
             },
 
             .get_local => |op| {
-                const value = self.stack.items()[op.offset];
+                const value = frame.slots(self)[op.offset];
                 self.stack.push(value);
             },
             .set_local => |op| {
                 const value = self.stack.peek(0);
-                self.stack.items()[op.offset] = value;
+                frame.slots(self)[op.offset] = value;
             },
 
             .pop => _ = self.stack.pop(),
@@ -160,7 +192,7 @@ pub const Vm = struct {
                 const b_value = self.stack.pop();
                 const a_value = self.stack.pop();
 
-                if (a_value.isString() and b_value.isString()) {
+                if (a_value.isObjectType(.string) and b_value.isObjectType(.string)) {
                     const bytes = try mem.concat(self.allocator, u8, &[_][]const u8{
                         a_value.object.asString().bytes,
                         b_value.object.asString().bytes,
@@ -188,13 +220,13 @@ pub const Vm = struct {
             },
 
             .jump => |op| {
-                self.ip += op.offset;
+                frame.ip += op.offset;
             },
             .jump_if_false => |op| {
-                if (!self.stack.peek(0).truthiness()) self.ip += op.offset;
+                if (!self.stack.peek(0).truthiness()) frame.ip += op.offset;
             },
             .loop => |op| {
-                self.ip -= op.offset;
+                frame.ip -= op.offset;
             },
         }
 
@@ -230,14 +262,55 @@ pub const Vm = struct {
         self.stack.push(res);
     }
 
+    fn callValue(self: *Vm, callee: Value, arg_count: u8) Error!void {
+        if (callee == .object) {
+            switch (callee.object.typ) {
+                .function => return try self.call(callee.object.asFunction(), arg_count),
+                else => {},
+            }
+        }
+
+        try self.runtimeError(
+            "Can only call functions and classes, but got: {s}",
+            .{@tagName(callee)},
+        );
+        return error.RuntimePanic;
+    }
+
+    fn call(self: *Vm, function: *Object.Function, arg_count: u8) Error!void {
+        if (arg_count != function.arity) {
+            try self.runtimeError(
+                "Expected {} arguments but got {}",
+                .{ function.arity, arg_count },
+            );
+            return error.RuntimePanic;
+        }
+
+        self.frames.tryPush(.{
+            .function = function,
+            .slots_start = self.stack.peekIndex(arg_count),
+        }) catch {
+            try self.runtimeError("Stack overflow.", .{});
+            return error.RuntimePanic;
+        };
+    }
+
     fn runtimeError(self: *Vm, comptime fmt: []const u8, args: anytype) File.WriteError!void {
         const stderr = io.getStdErr().writer();
 
         try stderr.print(fmt, args);
         try stderr.writeAll("\n");
 
-        const line = self.chunk.getLine(self.ip -| 1);
-        try stderr.print("[line {}] in script\n", .{line});
+        while (self.frames.tryPop()) |frame| {
+            const function = frame.function;
+            const line = frame.chunk().getLine(frame.ip -| 1);
+            if (frame.function.name) |n| {
+                try stderr.print("[line {}] in {s}()\n", .{ line, n });
+            } else {
+                try stderr.print("[line {}] in script\n", .{line});
+            }
+            _ = function;
+        }
 
         self.stack.clear();
     }

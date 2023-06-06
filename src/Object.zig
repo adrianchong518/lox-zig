@@ -4,6 +4,7 @@ const Allocator = mem.Allocator;
 
 const hashBytes = @import("hash.zig").hashBytes;
 const Vm = @import("vm.zig").Vm;
+const Chunk = @import("chunk.zig").Chunk;
 
 const Object = @This();
 
@@ -12,10 +13,12 @@ next: ?*Object,
 
 pub const Type = enum {
     string,
+    function,
 
     fn T(comptime self: Type) type {
         return switch (self) {
             .string => String,
+            .function => Function,
         };
     }
 };
@@ -75,7 +78,7 @@ pub const String = struct {
 
     fn createAssumeNovel(vm: *Vm, bytes: []const u8) Allocator.Error!*String {
         const object = try Object.create(vm, .string);
-        var out = object.asString();
+        const out = object.asString();
 
         out.* = .{
             .object = object.*,
@@ -152,7 +155,47 @@ pub const String = struct {
     }
 };
 
-pub fn create(vm: *Vm, typ: Type) Allocator.Error!*Object {
+pub const Function = struct {
+    object: Object,
+    arity: u8 = 0,
+    chunk: Chunk,
+    name: ?*String = null,
+
+    pub fn create(vm: *Vm) Allocator.Error!*Function {
+        const object = try Object.create(vm, .function);
+        const out = object.asFunction();
+
+        out.* = .{
+            .object = object.*,
+            .chunk = Chunk.init(vm.allocator),
+        };
+
+        return out;
+    }
+
+    pub fn destroy(self: *Function, vm: *Vm) void {
+        self.chunk.deinit();
+        vm.allocator.destroy(self);
+    }
+
+    pub fn format(
+        self: *const Function,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+
+        if (self.name) |n| {
+            try writer.print("<fn {s}>", .{n.bytes});
+        } else {
+            try writer.writeAll("<script>");
+        }
+    }
+};
+
+pub fn create(vm: *Vm, comptime typ: Type) Allocator.Error!*Object {
     var object = &(try vm.allocator.create(typ.T())).object;
 
     const next = vm.objects;
@@ -165,26 +208,34 @@ pub fn create(vm: *Vm, typ: Type) Allocator.Error!*Object {
 pub fn destroy(self: *Object, vm: *Vm) void {
     switch (self.typ) {
         .string => self.asString().destroy(vm),
+        .function => self.asFunction().destroy(vm),
     }
 }
 
-pub fn isString(self: Object) bool {
-    return self.typ == .string;
-}
-
 pub fn asString(self: *Object) *String {
-    std.debug.assert(self.isString());
+    std.debug.assert(self.typ == .string);
     return @fieldParentPtr(String, "object", self);
 }
 
 pub fn asConstString(self: *const Object) *const String {
-    std.debug.assert(self.isString());
+    std.debug.assert(self.typ == .string);
     return @fieldParentPtr(String, "object", self);
+}
+
+pub fn asFunction(self: *Object) *Function {
+    std.debug.assert(self.typ == .function);
+    return @fieldParentPtr(Function, "object", self);
+}
+
+pub fn asConstFunction(self: *const Object) *const Function {
+    std.debug.assert(self.typ == .function);
+    return @fieldParentPtr(Function, "object", self);
 }
 
 pub fn eql(self: *const Object, other: *const Object) bool {
     return switch (self.typ) {
         .string => self.asConstString().eql(other.asConstString()),
+        .function => @panic("todo"),
     };
 }
 
@@ -194,8 +245,9 @@ pub fn format(
     options: std.fmt.FormatOptions,
     writer: anytype,
 ) !void {
-    if (std.mem.eql(u8, fmt, "#")) try writer.print("{*} ", .{self});
+    if (std.mem.eql(u8, fmt, "#")) try writer.print("{*} .{s} ", .{ self, @tagName(self.typ) });
     switch (self.typ) {
         .string => try self.asConstString().format(fmt, options, writer),
+        .function => try self.asConstFunction().format(fmt, options, writer),
     }
 }
