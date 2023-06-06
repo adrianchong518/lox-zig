@@ -29,7 +29,7 @@ pub const Vm = struct {
     const stack_max = frames_max * (std.math.maxInt(u8) + 1);
     const frames_max = 64;
 
-    const Error = File.WriteError || Allocator.Error || error{RuntimePanic};
+    pub const Error = File.WriteError || Allocator.Error || error{RuntimePanic};
     const Status = ?enum { stop };
 
     const CallFrame = struct {
@@ -59,7 +59,7 @@ pub const Vm = struct {
             .objects = null,
         };
 
-        try vm.defineNative("clock", clockNative);
+        try vm.defineNative("clock", clockNative, 0);
 
         return vm;
     }
@@ -271,10 +271,20 @@ pub const Vm = struct {
             switch (callee.object.typ) {
                 .function => return try self.call(callee.object.as(.function), arg_count),
                 .native => {
-                    const native = callee.object.as(.native).function;
+                    const native = callee.object.as(.native);
+
+                    if (arg_count != native.arity) {
+                        try self.runtimeError(
+                            "Expected {} arguments but got {}",
+                            .{ native.arity, arg_count },
+                        );
+                        return error.RuntimePanic;
+                    }
+
                     const args_start = self.stack.peekIndex(arg_count) + 1;
                     const args = self.stack.items()[args_start..][0..arg_count];
-                    const result = native(args);
+
+                    const result = try native.function(self, args);
 
                     self.stack.discardUntil(args_start - 1);
                     self.stack.push(result);
@@ -330,9 +340,14 @@ pub const Vm = struct {
         self.stack.clear();
     }
 
-    fn defineNative(self: *Vm, name: []const u8, function: Object.Native.Fn) Allocator.Error!void {
+    fn defineNative(
+        self: *Vm,
+        name: []const u8,
+        function: Object.Native.Fn,
+        arity: u8,
+    ) Allocator.Error!void {
         self.stack.push(Value.from(try Object.String.createCopy(self, name)));
-        self.stack.push(Value.from(try Object.Native.create(self, function)));
+        self.stack.push(Value.from(try Object.Native.create(self, function, arity)));
 
         try self.globals.put(self.stack.peek(1).object.as(.string), self.stack.peek(0));
 
@@ -341,6 +356,6 @@ pub const Vm = struct {
     }
 };
 
-fn clockNative(_: []Value) Value {
+fn clockNative(_: *Vm, _: []const Value) Vm.Error!Value {
     return Value.from(@intToFloat(f64, std.time.microTimestamp()) / std.time.us_per_s);
 }

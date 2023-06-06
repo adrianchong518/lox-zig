@@ -204,16 +204,18 @@ pub const Function = struct {
 
 pub const Native = struct {
     object: Object,
+    arity: u8,
     function: Fn,
 
-    pub const Fn = *const fn (args: []Value) Value;
+    pub const Fn = *const fn (vm: *Vm, args: []const Value) Vm.Error!Value;
 
-    pub fn create(vm: *Vm, function: Fn) Allocator.Error!*Native {
+    pub fn create(vm: *Vm, function: Fn, arity: u8) Allocator.Error!*Native {
         const object = try Object.create(vm, .native);
         const out = object.as(.native);
 
         out.* = .{
             .object = object.*,
+            .arity = arity,
             .function = function,
         };
 
