@@ -47,7 +47,7 @@ pub const Vm = struct {
     };
 
     pub fn init(allocator: Allocator) Allocator.Error!Vm {
-        return .{
+        var vm = Vm{
             .allocator = allocator,
 
             .stack = try FixedCapacityStack(Value).init(allocator, stack_max),
@@ -58,6 +58,10 @@ pub const Vm = struct {
 
             .objects = null,
         };
+
+        try vm.defineNative("clock", clockNative);
+
+        return vm;
     }
 
     pub fn deinit(self: *Vm) void {
@@ -132,12 +136,12 @@ pub const Vm = struct {
             .constant => |op| self.stack.push(frame.chunk().constants.items[op.offset]),
 
             .define_global => |op| {
-                const name = frame.chunk().constants.items[op.offset].object.asString();
+                const name = frame.chunk().constants.items[op.offset].object.as(.string);
                 _ = try self.globals.put(name, self.stack.peek(0));
                 _ = self.stack.pop();
             },
             .get_global => |op| {
-                const name = frame.chunk().constants.items[op.offset].object.asString();
+                const name = frame.chunk().constants.items[op.offset].object.as(.string);
                 const value = self.globals.get(name) orelse {
                     try self.runtimeError("Undefined variable '{0}' ({0#})", .{Value.from(name)});
                     return error.RuntimePanic;
@@ -145,7 +149,7 @@ pub const Vm = struct {
                 self.stack.push(value);
             },
             .set_global => |op| {
-                const name = frame.chunk().constants.items[op.offset].object.asString();
+                const name = frame.chunk().constants.items[op.offset].object.as(.string);
                 const value_ptr = self.globals.getPtr(name) orelse {
                     try self.runtimeError("Undefined variable '{0}' ({0#})", .{Value.from(name)});
                     return error.RuntimePanic;
@@ -194,8 +198,8 @@ pub const Vm = struct {
 
                 if (a_value.isObjectType(.string) and b_value.isObjectType(.string)) {
                     const bytes = try mem.concat(self.allocator, u8, &[_][]const u8{
-                        a_value.object.asString().bytes,
-                        b_value.object.asString().bytes,
+                        a_value.object.as(.string).bytes,
+                        b_value.object.as(.string).bytes,
                     });
                     errdefer self.allocator.free(bytes);
 
@@ -265,7 +269,18 @@ pub const Vm = struct {
     fn callValue(self: *Vm, callee: Value, arg_count: u8) Error!void {
         if (callee == .object) {
             switch (callee.object.typ) {
-                .function => return try self.call(callee.object.asFunction(), arg_count),
+                .function => return try self.call(callee.object.as(.function), arg_count),
+                .native => {
+                    const native = callee.object.as(.native).function;
+                    const args_start = self.stack.peekIndex(arg_count) + 1;
+                    const args = self.stack.items()[args_start..][0..arg_count];
+                    const result = native(args);
+
+                    self.stack.discardUntil(args_start - 1);
+                    self.stack.push(result);
+
+                    return;
+                },
                 else => {},
             }
         }
@@ -314,4 +329,18 @@ pub const Vm = struct {
 
         self.stack.clear();
     }
+
+    fn defineNative(self: *Vm, name: []const u8, function: Object.Native.Fn) Allocator.Error!void {
+        self.stack.push(Value.from(try Object.String.createCopy(self, name)));
+        self.stack.push(Value.from(try Object.Native.create(self, function)));
+
+        try self.globals.put(self.stack.peek(1).object.as(.string), self.stack.peek(0));
+
+        _ = self.stack.pop();
+        _ = self.stack.pop();
+    }
 };
+
+fn clockNative(_: []Value) Value {
+    return Value.from(@intToFloat(f64, std.time.microTimestamp()) / std.time.us_per_s);
+}

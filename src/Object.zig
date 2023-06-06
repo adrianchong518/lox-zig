@@ -5,6 +5,7 @@ const Allocator = mem.Allocator;
 const hashBytes = @import("hash.zig").hashBytes;
 const Vm = @import("vm.zig").Vm;
 const Chunk = @import("chunk.zig").Chunk;
+const Value = @import("value.zig").Value;
 
 const Object = @This();
 
@@ -14,11 +15,13 @@ next: ?*Object,
 pub const Type = enum {
     string,
     function,
+    native,
 
     fn T(comptime self: Type) type {
         return switch (self) {
             .string => String,
             .function => Function,
+            .native => Native,
         };
     }
 };
@@ -78,7 +81,7 @@ pub const String = struct {
 
     fn createAssumeNovel(vm: *Vm, bytes: []const u8) Allocator.Error!*String {
         const object = try Object.create(vm, .string);
-        const out = object.asString();
+        const out = object.as(.string);
 
         out.* = .{
             .object = object.*,
@@ -163,7 +166,7 @@ pub const Function = struct {
 
     pub fn create(vm: *Vm) Allocator.Error!*Function {
         const object = try Object.create(vm, .function);
-        const out = object.asFunction();
+        const out = object.as(.function);
 
         out.* = .{
             .object = object.*,
@@ -193,6 +196,50 @@ pub const Function = struct {
             try writer.writeAll("<script>");
         }
     }
+
+    pub fn eql(self: *const Function, other: *const Function) bool {
+        return @ptrToInt(self) == @ptrToInt(other);
+    }
+};
+
+pub const Native = struct {
+    object: Object,
+    function: Fn,
+
+    pub const Fn = *const fn (args: []Value) Value;
+
+    pub fn create(vm: *Vm, function: Fn) Allocator.Error!*Native {
+        const object = try Object.create(vm, .native);
+        const out = object.as(.native);
+
+        out.* = .{
+            .object = object.*,
+            .function = function,
+        };
+
+        return out;
+    }
+
+    pub fn destroy(self: *Native, vm: *Vm) void {
+        vm.allocator.destroy(self);
+    }
+
+    pub fn format(
+        self: *const Native,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = self;
+        _ = fmt;
+        _ = options;
+
+        try writer.writeAll("<native fn>");
+    }
+
+    pub fn eql(self: *const Native, other: *const Native) bool {
+        return @ptrToInt(self) == @ptrToInt(other);
+    }
 };
 
 pub fn create(vm: *Vm, comptime typ: Type) Allocator.Error!*Object {
@@ -207,35 +254,29 @@ pub fn create(vm: *Vm, comptime typ: Type) Allocator.Error!*Object {
 
 pub fn destroy(self: *Object, vm: *Vm) void {
     switch (self.typ) {
-        .string => self.asString().destroy(vm),
-        .function => self.asFunction().destroy(vm),
+        .string => self.as(.string).destroy(vm),
+        .function => self.as(.function).destroy(vm),
+        .native => self.as(.native).destroy(vm),
     }
 }
 
-pub fn asString(self: *Object) *String {
-    std.debug.assert(self.typ == .string);
-    return @fieldParentPtr(String, "object", self);
+pub fn as(self: *Object, comptime typ: Type) *(typ.T()) {
+    std.debug.assert(self.typ == typ);
+    return @fieldParentPtr(typ.T(), "object", self);
 }
 
-pub fn asConstString(self: *const Object) *const String {
-    std.debug.assert(self.typ == .string);
-    return @fieldParentPtr(String, "object", self);
-}
-
-pub fn asFunction(self: *Object) *Function {
-    std.debug.assert(self.typ == .function);
-    return @fieldParentPtr(Function, "object", self);
-}
-
-pub fn asConstFunction(self: *const Object) *const Function {
-    std.debug.assert(self.typ == .function);
-    return @fieldParentPtr(Function, "object", self);
+pub fn asConst(self: *const Object, comptime typ: Type) *const (typ.T()) {
+    std.debug.assert(self.typ == typ);
+    return @fieldParentPtr(typ.T(), "object", self);
 }
 
 pub fn eql(self: *const Object, other: *const Object) bool {
+    if (self.typ != other.typ) return false;
+
     return switch (self.typ) {
-        .string => self.asConstString().eql(other.asConstString()),
-        .function => @panic("todo"),
+        .string => self.asConst(.string).eql(other.asConst(.string)),
+        .function => self.asConst(.function).eql(other.asConst(.function)),
+        .native => self.asConst(.native).eql(other.asConst(.native)),
     };
 }
 
@@ -246,8 +287,9 @@ pub fn format(
     writer: anytype,
 ) !void {
     if (std.mem.eql(u8, fmt, "#")) try writer.print("{*} .{s} ", .{ self, @tagName(self.typ) });
-    switch (self.typ) {
-        .string => try self.asConstString().format(fmt, options, writer),
-        .function => try self.asConstFunction().format(fmt, options, writer),
-    }
+    return switch (self.typ) {
+        .string => self.asConst(.string).format(fmt, options, writer),
+        .function => self.asConst(.function).format(fmt, options, writer),
+        .native => self.asConst(.native).format(fmt, options, writer),
+    };
 }

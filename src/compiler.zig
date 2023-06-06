@@ -260,7 +260,6 @@ const Parser = struct {
 
     fn funStatement(self: *Parser) Error!void {
         const global = try self.parseVariable(.initialized, "Expect function name.");
-        std.debug.print("defining fn: {} {s}\n", .{ global.?, global.?.lexeme });
         _ = try self.emitFunction(.function);
         try self.defineVariable(global);
     }
