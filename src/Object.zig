@@ -14,14 +14,20 @@ next: ?*Object,
 
 pub const Type = enum {
     string,
+    upvalue,
+
     function,
     native,
+    closure,
 
     fn T(comptime self: Type) type {
         return switch (self) {
             .string => String,
+            .upvalue => Upvalue,
+
             .function => Function,
             .native => Native,
+            .closure => Closure,
         };
     }
 };
@@ -158,11 +164,55 @@ pub const String = struct {
     }
 };
 
+pub const Upvalue = struct {
+    object: Object,
+    location: *Value,
+    closed: Value = .nil,
+    next: ?*Upvalue,
+
+    pub fn create(vm: *Vm, location: *Value, next: ?*Upvalue) Allocator.Error!*Upvalue {
+        const object = try Object.create(vm, .upvalue);
+        const out = object.as(.upvalue);
+
+        out.* = .{
+            .object = object.*,
+            .location = location,
+            .next = next,
+        };
+
+        return out;
+    }
+
+    pub fn destroy(self: *Upvalue, vm: *Vm) void {
+        vm.allocator.destroy(self);
+    }
+
+    pub fn format(
+        self: *const Upvalue,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = options;
+
+        if (std.mem.eql(u8, fmt, "#")) {
+            try writer.print("<upvalue -> {} {}>", .{ self.location, self.location.* });
+        } else {
+            try writer.writeAll("<upvalue>");
+        }
+    }
+
+    pub fn eql(self: *const Upvalue, other: *const Upvalue) bool {
+        return @ptrToInt(self) == @ptrToInt(other);
+    }
+};
+
 pub const Function = struct {
     object: Object,
     arity: u8 = 0,
     chunk: Chunk,
     name: ?*String = null,
+    upvalue_count: usize = 0,
 
     pub fn create(vm: *Vm) Allocator.Error!*Function {
         const object = try Object.create(vm, .function);
@@ -244,6 +294,45 @@ pub const Native = struct {
     }
 };
 
+pub const Closure = struct {
+    object: Object,
+    function: *Function,
+    upvalues: []*Upvalue,
+
+    pub fn create(vm: *Vm, function: *Function) Allocator.Error!*Closure {
+        const object = try Object.create(vm, .closure);
+        const out = object.as(.closure);
+
+        const upvalues = try vm.allocator.alloc(*Upvalue, function.upvalue_count);
+
+        out.* = .{
+            .object = object.*,
+            .function = function,
+            .upvalues = upvalues,
+        };
+
+        return out;
+    }
+
+    pub fn destroy(self: *Closure, vm: *Vm) void {
+        vm.allocator.free(self.upvalues);
+        vm.allocator.destroy(self);
+    }
+
+    pub fn format(
+        self: *const Closure,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        try self.function.format(fmt, options, writer);
+    }
+
+    pub fn eql(self: *const Closure, other: *const Closure) bool {
+        return @ptrToInt(self) == @ptrToInt(other);
+    }
+};
+
 pub fn create(vm: *Vm, comptime typ: Type) Allocator.Error!*Object {
     var object = &(try vm.allocator.create(typ.T())).object;
 
@@ -257,8 +346,11 @@ pub fn create(vm: *Vm, comptime typ: Type) Allocator.Error!*Object {
 pub fn destroy(self: *Object, vm: *Vm) void {
     switch (self.typ) {
         .string => self.as(.string).destroy(vm),
+        .upvalue => self.as(.upvalue).destroy(vm),
+
         .function => self.as(.function).destroy(vm),
         .native => self.as(.native).destroy(vm),
+        .closure => self.as(.closure).destroy(vm),
     }
 }
 
@@ -277,8 +369,11 @@ pub fn eql(self: *const Object, other: *const Object) bool {
 
     return switch (self.typ) {
         .string => self.asConst(.string).eql(other.asConst(.string)),
+        .upvalue => self.asConst(.upvalue).eql(other.asConst(.upvalue)),
+
         .function => self.asConst(.function).eql(other.asConst(.function)),
         .native => self.asConst(.native).eql(other.asConst(.native)),
+        .closure => self.asConst(.closure).eql(other.asConst(.closure)),
     };
 }
 
@@ -291,7 +386,10 @@ pub fn format(
     if (std.mem.eql(u8, fmt, "#")) try writer.print("{*} .{s} ", .{ self, @tagName(self.typ) });
     return switch (self.typ) {
         .string => self.asConst(.string).format(fmt, options, writer),
+        .upvalue => self.asConst(.upvalue).format(fmt, options, writer),
+
         .function => self.asConst(.function).format(fmt, options, writer),
         .native => self.asConst(.native).format(fmt, options, writer),
+        .closure => self.asConst(.closure).format(fmt, options, writer),
     };
 }

@@ -35,17 +35,24 @@ pub fn disassembleInstruction(chunk: Chunk, offset: usize) usize {
     std.debug.print("{x:0>2} ", .{@enumToInt(instruction)});
 
     switch (instruction) {
-        .call => |op| printInteger("OP_CALL", op.arg_count),
+        .call => |op| printInt("OP_CALL", op.arg_count),
         .@"return" => printSimple("OP_RETURN"),
 
-        .constant => |op| printConstant("OP_CONSTANT", chunk, op.offset),
-        .define_global => |op| printConstant("OP_DEFINE_GLOBAL", chunk, op.offset),
-        .get_global => |op| printConstant("OP_GET_GLOBAL", chunk, op.offset),
-        .set_global => |op| printConstant("OP_SET_GLOBAL", chunk, op.offset),
-        .get_local => |op| printInteger("OP_GET_LOCAL", op.offset),
-        .set_local => |op| printInteger("OP_SET_LOCAL", op.offset),
+        .constant => |op| printConstant("OP_CONSTANT", chunk, op.index),
+        .closure => |op| printClosure("OP_CLOSURE", chunk, op.index, &new_offset),
+
+        .define_global => |op| printConstant("OP_DEFINE_GLOBAL", chunk, op.index),
+        .get_global => |op| printConstant("OP_GET_GLOBAL", chunk, op.index),
+        .set_global => |op| printConstant("OP_SET_GLOBAL", chunk, op.index),
+
+        .get_local => |op| printInt("OP_GET_LOCAL", op.index),
+        .set_local => |op| printInt("OP_SET_LOCAL", op.index),
+
+        .get_upvalue => |op| printInt("OP_GET_UPVALUE", op.index),
+        .set_upvalue => |op| printInt("OP_SET_UPVALUE", op.index),
 
         .pop => printSimple("OP_POP"),
+        .close_upvalue => printSimple("OP_CLOSE_UPVALUE"),
 
         .nil => printSimple("OP_NIL"),
         .true => printSimple("OP_TRUE"),
@@ -76,15 +83,15 @@ fn printSimple(name: []const u8) void {
     std.debug.print("{s}\n", .{name});
 }
 
-fn printConstant(name: []const u8, chunk: Chunk, constant_offset: usize) void {
+fn printConstant(name: []const u8, chunk: Chunk, constant_index: usize) void {
     std.debug.print("{s: <16} {: >4} {#}\n", .{
         name,
-        constant_offset,
-        chunk.constants.items[constant_offset],
+        constant_index,
+        chunk.constants.items[constant_index],
     });
 }
 
-fn printInteger(name: []const u8, byte: anytype) void {
+fn printInt(name: []const u8, byte: anytype) void {
     std.debug.print("{s: <16} {: >4}\n", .{ name, byte });
 }
 
@@ -99,4 +106,19 @@ fn printJump(
         .backward => instruction_offset + 3 - offset,
     };
     std.debug.print("{s: <16} {: >4} -> {}\n", .{ name, instruction_offset, target });
+}
+
+fn printClosure(name: []const u8, chunk: Chunk, function_offset: usize, new_offset: *usize) void {
+    const function = chunk.constants.items[function_offset].object.as(.function);
+    std.debug.print("{s: <16} {: >4} {#}\n", .{ name, function_offset, function });
+
+    for (0..function.upvalue_count) |_| {
+        std.debug.print("{:0>4}      | ", .{new_offset.*});
+        const upvalue = chunk.nextUpvalue(new_offset);
+
+        std.debug.print(
+            "                         {s: <10} {}\n",
+            .{ @tagName(upvalue.locality), upvalue.index },
+        );
+    }
 }

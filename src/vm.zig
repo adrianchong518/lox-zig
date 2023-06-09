@@ -24,21 +24,22 @@ pub const Vm = struct {
 
     frames: FixedCapacityStack(CallFrame),
 
-    objects: ?*Object,
+    objects: ?*Object = null,
+    open_upvalues: ?*Object.Upvalue = null,
 
-    const stack_max = frames_max * (std.math.maxInt(u8) + 1);
-    const frames_max = 64;
+    const stack_size = frames_size * 256;
+    const frames_size = 64;
 
     pub const Error = File.WriteError || Allocator.Error || error{RuntimePanic};
     const Status = ?enum { stop };
 
     const CallFrame = struct {
-        function: *Object.Function,
+        closure: *Object.Closure,
         ip: usize = 0,
         slots_start: usize,
 
         fn chunk(self: CallFrame) Chunk {
-            return self.function.chunk;
+            return self.closure.function.chunk;
         }
 
         fn slots(self: CallFrame, vm: *Vm) []Value {
@@ -50,13 +51,11 @@ pub const Vm = struct {
         var vm = Vm{
             .allocator = allocator,
 
-            .stack = try FixedCapacityStack(Value).init(allocator, stack_max),
+            .stack = try FixedCapacityStack(Value).init(allocator, stack_size),
             .strings = Object.String.HashMap(void).init(allocator),
             .globals = Object.String.HashMap(Value).init(allocator),
 
-            .frames = try FixedCapacityStack(CallFrame).init(allocator, frames_max),
-
-            .objects = null,
+            .frames = try FixedCapacityStack(CallFrame).init(allocator, frames_size),
         };
 
         try vm.defineNative("clock", clockNative, 0);
@@ -83,7 +82,10 @@ pub const Vm = struct {
 
     pub fn interpret(self: *Vm, function: *Object.Function) Error!void {
         self.stack.push(Value.from(function));
-        try self.call(function, 0);
+        const script = try Object.Closure.create(self, function);
+
+        self.stack.peekPtr(0).* = Value.from(script);
+        try self.call(script, 0);
 
         try self.run();
     }
@@ -123,6 +125,8 @@ pub const Vm = struct {
 
             .@"return" => {
                 const result = self.stack.pop();
+                self.closeUpvalue(&frame.slots(self)[0]);
+
                 _ = self.frames.pop();
                 if (self.frames.count() == 0) {
                     _ = self.stack.pop();
@@ -133,15 +137,31 @@ pub const Vm = struct {
                 self.stack.push(result);
             },
 
-            .constant => |op| self.stack.push(frame.chunk().constants.items[op.offset]),
+            .constant => |op| self.stack.push(frame.chunk().constants.items[op.index]),
+
+            .closure => |op| {
+                const function = frame.chunk().constants.items[op.index].object.as(.function);
+                const closure = try Object.Closure.create(self, function);
+                self.stack.push(Value.from(closure));
+
+                for (closure.upvalues, 0..) |*u, i| {
+                    _ = i;
+                    const upvalue = frame.chunk().nextUpvalue(&frame.ip);
+                    if (upvalue.locality == .local) {
+                        u.* = try self.captureUpvalue(&frame.slots(self)[upvalue.index]);
+                    } else {
+                        u.* = frame.closure.upvalues[upvalue.index];
+                    }
+                }
+            },
 
             .define_global => |op| {
-                const name = frame.chunk().constants.items[op.offset].object.as(.string);
+                const name = frame.chunk().constants.items[op.index].object.as(.string);
                 _ = try self.globals.put(name, self.stack.peek(0));
                 _ = self.stack.pop();
             },
             .get_global => |op| {
-                const name = frame.chunk().constants.items[op.offset].object.as(.string);
+                const name = frame.chunk().constants.items[op.index].object.as(.string);
                 const value = self.globals.get(name) orelse {
                     try self.runtimeError("Undefined variable '{0}' ({0#})", .{Value.from(name)});
                     return error.RuntimePanic;
@@ -149,7 +169,7 @@ pub const Vm = struct {
                 self.stack.push(value);
             },
             .set_global => |op| {
-                const name = frame.chunk().constants.items[op.offset].object.as(.string);
+                const name = frame.chunk().constants.items[op.index].object.as(.string);
                 const value_ptr = self.globals.getPtr(name) orelse {
                     try self.runtimeError("Undefined variable '{0}' ({0#})", .{Value.from(name)});
                     return error.RuntimePanic;
@@ -159,15 +179,28 @@ pub const Vm = struct {
             },
 
             .get_local => |op| {
-                const value = frame.slots(self)[op.offset];
+                const value = frame.slots(self)[op.index];
                 self.stack.push(value);
             },
             .set_local => |op| {
                 const value = self.stack.peek(0);
-                frame.slots(self)[op.offset] = value;
+                frame.slots(self)[op.index] = value;
+            },
+
+            .get_upvalue => |op| {
+                const value = frame.closure.upvalues[op.index].location.*;
+                self.stack.push(value);
+            },
+            .set_upvalue => |op| {
+                const value = self.stack.peek(0);
+                frame.closure.upvalues[op.index].location.* = value;
             },
 
             .pop => _ = self.stack.pop(),
+            .close_upvalue => {
+                self.closeUpvalue(self.stack.peekPtr(0));
+                _ = self.stack.pop();
+            },
 
             .nil => self.stack.push(.nil),
             .true => self.stack.push(Value.from(true)),
@@ -269,7 +302,8 @@ pub const Vm = struct {
     fn callValue(self: *Vm, callee: Value, arg_count: u8) Error!void {
         if (callee == .object) {
             switch (callee.object.typ) {
-                .function => return try self.call(callee.object.as(.function), arg_count),
+                .closure => return self.call(callee.object.as(.closure), arg_count),
+
                 .native => {
                     const native = callee.object.as(.native);
 
@@ -302,22 +336,56 @@ pub const Vm = struct {
         return error.RuntimePanic;
     }
 
-    fn call(self: *Vm, function: *Object.Function, arg_count: u8) Error!void {
-        if (arg_count != function.arity) {
+    fn call(self: *Vm, closure: *Object.Closure, arg_count: u8) Error!void {
+        if (arg_count != closure.function.arity) {
             try self.runtimeError(
                 "Expected {} arguments but got {}",
-                .{ function.arity, arg_count },
+                .{ closure.function.arity, arg_count },
             );
             return error.RuntimePanic;
         }
 
         self.frames.tryPush(.{
-            .function = function,
+            .closure = closure,
             .slots_start = self.stack.peekIndex(arg_count),
         }) catch {
             try self.runtimeError("Stack overflow.", .{});
             return error.RuntimePanic;
         };
+    }
+
+    fn captureUpvalue(self: *Vm, local: *Value) Allocator.Error!*Object.Upvalue {
+        var prev_upvalue: ?*Object.Upvalue = null;
+        var upvalue = self.open_upvalues;
+
+        while (upvalue) |u| {
+            if (@ptrToInt(u.location) <= @ptrToInt(local)) break;
+
+            prev_upvalue = upvalue;
+            upvalue = u.next;
+        }
+
+        if (upvalue) |u| {
+            if (u.location == local) return u;
+        }
+
+        const new_upvalue = try Object.Upvalue.create(self, local, upvalue);
+        if (prev_upvalue) |pu| {
+            pu.next = new_upvalue;
+        } else {
+            self.open_upvalues = new_upvalue;
+        }
+        return new_upvalue;
+    }
+
+    fn closeUpvalue(self: *Vm, last: *Value) void {
+        while (self.open_upvalues) |u| {
+            if (@ptrToInt(u.location) < @ptrToInt(last)) break;
+
+            u.closed = u.location.*;
+            u.location = &u.closed;
+            self.open_upvalues = u.next;
+        }
     }
 
     fn runtimeError(self: *Vm, comptime fmt: []const u8, args: anytype) File.WriteError!void {
@@ -327,14 +395,13 @@ pub const Vm = struct {
         try stderr.writeAll("\n");
 
         while (self.frames.tryPop()) |frame| {
-            const function = frame.function;
+            const function = frame.closure.function;
             const line = frame.chunk().getLine(frame.ip -| 1);
-            if (frame.function.name) |n| {
+            if (function.name) |n| {
                 try stderr.print("[line {}] in {s}()\n", .{ line, n });
             } else {
                 try stderr.print("[line {}] in script\n", .{line});
             }
-            _ = function;
         }
 
         self.stack.clear();

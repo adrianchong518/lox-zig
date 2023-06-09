@@ -135,8 +135,11 @@ const ParseRule = struct {
 
 const Compiler = struct {
     enclosing: ?*Compiler,
+
     function: *Object.Function,
     function_type: FunctionType,
+    upvalues: ArrayList(OpCode.Upvalue),
+
     constant_strings: Object.String.HashMap(usize),
 
     locals: ArrayList(Local),
@@ -148,6 +151,7 @@ const Compiler = struct {
         name: Token,
         depth: usize,
         state: State,
+        is_captured: bool = false,
 
         const State = enum { uninitialized, initialized };
     };
@@ -164,12 +168,14 @@ const Compiler = struct {
             .enclosing = enclosing,
             .function = try Object.Function.create(vm),
             .function_type = function_type,
+            .upvalues = ArrayList(OpCode.Upvalue).init(vm.allocator),
             .constant_strings = Object.String.HashMap(usize).init(vm.allocator),
             .locals = locals,
         };
     }
 
     fn deinit(self: *Compiler) void {
+        self.upvalues.deinit();
         self.constant_strings.deinit();
         self.locals.deinit();
         self.* = undefined;
@@ -183,9 +189,60 @@ const Compiler = struct {
         });
     }
 
+    fn addUpvalue(
+        self: *Compiler,
+        index: usize,
+        locality: OpCode.Upvalue.Locality,
+    ) Allocator.Error!usize {
+        const upvalue = .{
+            .index = index,
+            .locality = locality,
+        };
+
+        for (self.upvalues.items, 0..) |u, i| {
+            if (u.eql(upvalue)) return i;
+        }
+
+        try self.upvalues.append(upvalue);
+        self.function.upvalue_count += 1;
+        return self.upvalues.items.len - 1;
+    }
+
     fn lastLocalPtr(self: *Compiler) *Local {
         std.debug.assert(self.locals.items.len > 0);
         return &self.locals.items[self.locals.items.len - 1];
+    }
+
+    fn resolveLocal(self: *Compiler, parser: *Parser, name: Token) Parser.Error!?usize {
+        var i = self.locals.items.len;
+        while (i > 0) : (i -= 1) {
+            const local = self.locals.items[i - 1];
+            if (local.name.eqlLexeme(name)) {
+                if (local.state == .uninitialized) {
+                    try parser.errorAtPrev("Can't read local variable in its own initializer.");
+                }
+                return i - 1;
+            }
+        }
+
+        return null;
+    }
+
+    fn resolveUpvalue(self: *Compiler, parser: *Parser, name: Token) Parser.Error!?usize {
+        const enclosing = self.enclosing orelse {
+            return null;
+        };
+
+        if (try enclosing.resolveLocal(parser, name)) |local| {
+            enclosing.locals.items[local].is_captured = true;
+            return try self.addUpvalue(local, .local);
+        }
+
+        if (try enclosing.resolveUpvalue(parser, name)) |upvalue| {
+            return try self.addUpvalue(upvalue, .non_local);
+        }
+
+        return null;
     }
 };
 
@@ -317,24 +374,8 @@ const Parser = struct {
             return;
         }
 
-        const offset = try self.stringConstant(name.?.lexeme);
-        _ = try self.emitOpCode(.{ .define_global = .{ .offset = offset } });
-    }
-
-    fn resolveLocal(self: *Parser, name: Token) Error!?usize {
-        const compiler = self.current_compiler;
-        var i = compiler.locals.items.len;
-        while (i > 0) : (i -= 1) {
-            const local = compiler.locals.items[i - 1];
-            if (local.name.eqlLexeme(name)) {
-                if (local.state == .uninitialized) {
-                    try self.errorAtPrev("Can't read local variable in its own initializer.");
-                }
-                return i - 1;
-            }
-        }
-
-        return null;
+        const index = try self.stringConstant(name.?.lexeme);
+        _ = try self.emitOpCode(.{ .define_global = .{ .index = index } });
     }
 
     fn statement(self: *Parser) Error!void {
@@ -527,7 +568,11 @@ const Parser = struct {
         while (self.current_compiler.locals.getLastOrNull()) |local| {
             if (local.depth <= self.current_compiler.scope_depth) break;
 
-            _ = try self.emitOpCode(.pop);
+            if (local.is_captured) {
+                _ = try self.emitOpCode(.close_upvalue);
+            } else {
+                _ = try self.emitOpCode(.pop);
+            }
             _ = self.current_compiler.locals.pop();
         }
     }
@@ -548,17 +593,23 @@ const Parser = struct {
 
     fn variable(self: *Parser, can_assign: bool) Error!void {
         const name = self.previous;
-        if (try self.resolveLocal(name)) |offset| {
+        if (try self.current_compiler.resolveLocal(self, name)) |index| {
             _ = try self.emitVariable(
-                .{ .get_local = .{ .offset = offset } },
-                .{ .set_local = .{ .offset = offset } },
+                .{ .get_local = .{ .index = index } },
+                .{ .set_local = .{ .index = index } },
+                can_assign,
+            );
+        } else if (try self.current_compiler.resolveUpvalue(self, name)) |index| {
+            _ = try self.emitVariable(
+                .{ .get_upvalue = .{ .index = index } },
+                .{ .set_upvalue = .{ .index = index } },
                 can_assign,
             );
         } else {
-            const offset = try self.stringConstant(name.lexeme);
+            const index = try self.stringConstant(name.lexeme);
             _ = try self.emitVariable(
-                .{ .get_global = .{ .offset = offset } },
-                .{ .set_global = .{ .offset = offset } },
+                .{ .get_global = .{ .index = index } },
+                .{ .set_global = .{ .index = index } },
                 can_assign,
             );
         }
@@ -737,15 +788,15 @@ const Parser = struct {
 
     fn emitConstant(self: *Parser, value: anytype) Allocator.Error!usize {
         const chunk = self.currentChunk();
-        const offset = try chunk.addConstant(value);
-        return chunk.writeOpCode(.{ .constant = .{ .offset = offset } }, self.previous.line);
+        const index = try chunk.addConstant(value);
+        return chunk.writeOpCode(.{ .constant = .{ .index = index } }, self.previous.line);
     }
 
     fn emitStringConstant(self: *Parser, bytes: []const u8) Allocator.Error!usize {
-        const offset = try self.stringConstant(bytes);
+        const index = try self.stringConstant(bytes);
         return self
             .currentChunk()
-            .writeOpCode(.{ .constant = .{ .offset = offset } }, self.previous.line);
+            .writeOpCode(.{ .constant = .{ .index = index } }, self.previous.line);
     }
 
     fn emitVariable(self: *Parser, get_op: OpCode, set_op: OpCode, can_assign: bool) Error!usize {
@@ -785,7 +836,16 @@ const Parser = struct {
         try self.block();
 
         const function = try self.popCompiler();
-        return self.emitConstant(function);
+        const index = try self.currentChunk().addConstant(function);
+
+        const loc = self.emitOpCode(.{ .closure = .{ .index = index } });
+
+        try self.currentChunk().writeUpvalues(
+            compiler.upvalues.items,
+            self.previous.line,
+        );
+
+        return loc;
     }
 
     fn emitLoop(self: *Parser, loop_start: usize) Error!usize {
@@ -800,22 +860,22 @@ const Parser = struct {
 
         if (offset > 0xffff) try self.errorAtPrev("Too much code to jump over.");
 
-        self.currentChunk().patchOffsetU16(@truncate(u16, offset), jump_instruction_loc + 1);
+        self.currentChunk().patchU16(@truncate(u16, offset), jump_instruction_loc + 1);
     }
 
     fn stringConstant(self: *Parser, bytes: []const u8) Allocator.Error!usize {
         if (self
             .current_compiler
             .constant_strings
-            .getAdapted(bytes, Object.String.SliceContext{})) |offset|
+            .getAdapted(bytes, Object.String.SliceContext{})) |index|
         {
-            return offset;
+            return index;
         }
 
         const identifier = try Object.String.createCopy(self.vm, bytes);
-        const offset = try self.currentChunk().addConstant(identifier);
-        try self.current_compiler.constant_strings.put(identifier, offset);
-        return offset;
+        const index = try self.currentChunk().addConstant(identifier);
+        try self.current_compiler.constant_strings.put(identifier, index);
+        return index;
     }
 
     fn errorAtCurrent(self: *Parser, message: []const u8) File.WriteError!void {
