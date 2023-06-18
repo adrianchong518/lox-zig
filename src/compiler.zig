@@ -15,7 +15,8 @@ const OpCode = @import("chunk.zig").OpCode;
 const Scanner = @import("scanner.zig").Scanner;
 const Token = @import("scanner.zig").Token;
 const Object = @import("Object.zig");
-const Vm = @import("vm.zig").Vm;
+const Vm = @import("Vm.zig");
+const Value = @import("value.zig").Value;
 
 pub fn compile(source: []const u8, vm: *Vm) InterpretError!*Object.Function {
     var scanner = Scanner.init(source);
@@ -23,7 +24,8 @@ pub fn compile(source: []const u8, vm: *Vm) InterpretError!*Object.Function {
     var compiler = try Compiler.init(vm, null, .script);
     defer compiler.deinit();
 
-    var parser = Parser.init(vm, &scanner, &compiler);
+    var parser = Parser.create();
+    parser.init(vm, &scanner, &compiler);
     defer parser.deinit();
 
     try parser.advance();
@@ -133,7 +135,7 @@ const ParseRule = struct {
     }
 };
 
-const Compiler = struct {
+pub const Compiler = struct {
     enclosing: ?*Compiler,
 
     function: *Object.Function,
@@ -246,7 +248,7 @@ const Compiler = struct {
     }
 };
 
-const Parser = struct {
+pub const Parser = struct {
     vm: *Vm,
 
     scanner: *Scanner,
@@ -264,15 +266,26 @@ const Parser = struct {
 
     const Error = File.WriteError || Allocator.Error;
 
-    fn init(vm: *Vm, scanner: *Scanner, initial_compiler: *Compiler) Parser {
+    fn create() Parser {
         return .{
+            .vm = undefined,
+            .scanner = undefined,
+            .current_compiler = undefined,
+        };
+    }
+
+    fn init(self: *Parser, vm: *Vm, scanner: *Scanner, initial_compiler: *Compiler) void {
+        self.* = .{
             .vm = vm,
             .scanner = scanner,
             .current_compiler = initial_compiler,
         };
+        self.vm.gc_allocator.attach_parser(self);
     }
 
     fn deinit(self: *Parser) void {
+        self.vm.gc_allocator.detach_parser();
+
         self.* = undefined;
     }
 
@@ -835,8 +848,11 @@ const Parser = struct {
         try self.consume(.left_brace, "Expect '{' before function body.");
         try self.block();
 
-        const function = try self.popCompiler();
+        const function = Value.from(try self.popCompiler());
+
+        self.vm.stack.push(function);
         const index = try self.currentChunk().addConstant(function);
+        _ = self.vm.stack.pop();
 
         const loc = self.emitOpCode(.{ .closure = .{ .index = index } });
 
@@ -873,7 +889,11 @@ const Parser = struct {
         }
 
         const identifier = try Object.String.createCopy(self.vm, bytes);
+
+        self.vm.stack.push(Value.from(identifier));
         const index = try self.currentChunk().addConstant(identifier);
+        _ = self.vm.stack.pop();
+
         try self.current_compiler.constant_strings.put(identifier, index);
         return index;
     }

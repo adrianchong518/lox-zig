@@ -8,7 +8,7 @@ const debug = @import("debug.zig");
 const compiler = @import("compiler.zig");
 const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
-const Vm = @import("vm.zig").Vm;
+const Vm = @import("Vm.zig");
 
 pub const InterpretError = error{
     CompileFailed,
@@ -37,7 +37,8 @@ fn repl(allocator: Allocator) InterpretError!void {
     const stderr = io.getStdErr().writer();
     const stdin = io.getStdIn().reader();
 
-    var vm = try Vm.init(allocator);
+    var vm = Vm.create();
+    try vm.init(allocator);
     defer vm.deinit();
 
     var buffer: [256]u8 = undefined;
@@ -70,7 +71,8 @@ fn runFile(allocator: Allocator, file_path: []const u8) InterpretError!void {
     };
     defer allocator.free(source);
 
-    var vm = try Vm.init(allocator);
+    var vm = Vm.create();
+    try vm.init(allocator);
     defer vm.deinit();
 
     interpret(source, &vm) catch |err| switch (err) {

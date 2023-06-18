@@ -2,15 +2,20 @@ const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
 
+const config = @import("config");
+
 const hashBytes = @import("hash.zig").hashBytes;
-const Vm = @import("vm.zig").Vm;
+const Vm = @import("Vm.zig");
 const Chunk = @import("chunk.zig").Chunk;
 const Value = @import("value.zig").Value;
+const GcAllocator = @import("GcAllocator.zig");
+const FixedCapacityStack = @import("stack.zig").FixedCapacityStack;
 
 const Object = @This();
 
 typ: Type,
 next: ?*Object,
+is_marked: bool = false,
 
 pub const Type = enum {
     string,
@@ -95,7 +100,9 @@ pub const String = struct {
             .hash = hashBytes(bytes),
         };
 
+        vm.stack.push(Value.from(out));
         try vm.strings.put(out, {});
+        _ = vm.stack.pop();
 
         return out;
     }
@@ -130,7 +137,8 @@ pub const String = struct {
     }
 
     test "compare String and a slice" {
-        var vm = try Vm.init(std.testing.allocator);
+        var vm = Vm.create();
+        try vm.init(std.testing.allocator);
         defer vm.deinit();
 
         const string = try String.createCopy(&vm, "hello");
@@ -138,7 +146,8 @@ pub const String = struct {
     }
 
     test "HashMap sanity check" {
-        var vm = try Vm.init(std.testing.allocator);
+        var vm = Vm.create();
+        try vm.init(std.testing.allocator);
         defer vm.deinit();
 
         const string = try String.createCopy(&vm, "hello");
@@ -196,7 +205,7 @@ pub const Upvalue = struct {
         _ = options;
 
         if (std.mem.eql(u8, fmt, "#")) {
-            try writer.print("<upvalue -> {} {}>", .{ self.location, self.location.* });
+            try writer.print("<upvalue -> {#}>", .{self.location});
         } else {
             try writer.writeAll("<upvalue>");
         }
@@ -298,12 +307,13 @@ pub const Closure = struct {
     object: Object,
     function: *Function,
     upvalues: []*Upvalue,
+    upvalue_count: usize = 0,
 
     pub fn create(vm: *Vm, function: *Function) Allocator.Error!*Closure {
+        const upvalues = try vm.allocator.alloc(*Upvalue, function.upvalue_count);
+
         const object = try Object.create(vm, .closure);
         const out = object.as(.closure);
-
-        const upvalues = try vm.allocator.alloc(*Upvalue, function.upvalue_count);
 
         out.* = .{
             .object = object.*,
@@ -336,6 +346,13 @@ pub const Closure = struct {
 pub fn create(vm: *Vm, comptime typ: Type) Allocator.Error!*Object {
     var object = &(try vm.allocator.create(typ.T())).object;
 
+    if (config.log_gc) {
+        GcAllocator.log.debug(
+            "alloced {} for {*} .{s}",
+            .{ @sizeOf(typ.T()), object, @tagName(typ) },
+        );
+    }
+
     const next = vm.objects;
     vm.objects = object;
 
@@ -344,6 +361,13 @@ pub fn create(vm: *Vm, comptime typ: Type) Allocator.Error!*Object {
 }
 
 pub fn destroy(self: *Object, vm: *Vm) void {
+    if (config.log_gc) {
+        GcAllocator.log.debug(
+            "free {*} .{s}",
+            .{ self, @tagName(self.typ) },
+        );
+    }
+
     switch (self.typ) {
         .string => self.as(.string).destroy(vm),
         .upvalue => self.as(.upvalue).destroy(vm),

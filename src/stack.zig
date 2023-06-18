@@ -5,7 +5,6 @@ pub fn FixedCapacityStack(comptime T: type) type {
     return struct {
         const Self = @This();
 
-        allocator: Allocator,
         buffer: []T,
         top: usize,
 
@@ -14,14 +13,13 @@ pub fn FixedCapacityStack(comptime T: type) type {
         pub fn init(allocator: Allocator, capacity: usize) Allocator.Error!Self {
             const buffer = try allocator.alloc(T, capacity);
             return .{
-                .allocator = allocator,
                 .buffer = buffer,
                 .top = 0,
             };
         }
 
-        pub fn deinit(self: *Self) void {
-            self.allocator.free(self.buffer);
+        pub fn deinit(self: *Self, allocator: Allocator) void {
+            allocator.free(self.buffer);
             self.* = undefined;
         }
 
