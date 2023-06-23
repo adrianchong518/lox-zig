@@ -88,7 +88,7 @@ const ParseRule = struct {
         r.set(.left_brace, .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.right_brace, .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.comma, .{ .prefix = null, .infix = null, .precedence = .none });
-        r.set(.dot, .{ .prefix = null, .infix = null, .precedence = .none });
+        r.set(.dot, .{ .prefix = null, .infix = Parser.dot, .precedence = .call });
         r.set(.minus, .{ .prefix = Parser.unary, .infix = Parser.binary, .precedence = .term });
         r.set(.plus, .{ .prefix = null, .infix = Parser.binary, .precedence = .term });
         r.set(.semicolon, .{ .prefix = null, .infix = null, .precedence = .none });
@@ -317,7 +317,9 @@ pub const Parser = struct {
     }
 
     fn declaration(self: *Parser) Error!void {
-        if (try self.match(.fun)) {
+        if (try self.match(.class)) {
+            try self.classDeclaration();
+        } else if (try self.match(.fun)) {
             try self.funStatement();
         } else if (try self.match(.@"var")) {
             try self.varDeclaration();
@@ -326,6 +328,19 @@ pub const Parser = struct {
         }
 
         if (self.panic_mode) try self.synchronize();
+    }
+
+    fn classDeclaration(self: *Parser) Error!void {
+        try self.consume(.identifier, "Expect class name");
+        const name = self.previous;
+        try self.declareVariable(name, .uninitialized);
+
+        const index = try self.stringConstant(name.lexeme);
+        _ = try self.emitOpCode(.{ .class = .{ .index = index } });
+        try self.defineVariable(name);
+
+        try self.consume(.left_brace, "Expect '{' before class body.");
+        try self.consume(.right_brace, "Expect '}' after class body.");
     }
 
     fn funStatement(self: *Parser) Error!void {
@@ -596,12 +611,18 @@ pub const Parser = struct {
 
     fn number(self: *Parser, _: bool) Error!void {
         const value = fmt.parseFloat(f64, self.previous.lexeme) catch unreachable;
-        _ = try self.emitConstant(value);
+        const index = try self.currentChunk().addConstant(value);
+        _ = try self
+            .currentChunk()
+            .writeOpCode(.{ .constant = .{ .index = index } }, self.previous.line);
     }
 
     fn string(self: *Parser, _: bool) Error!void {
         const bytes = self.previous.lexeme[1 .. self.previous.lexeme.len - 1];
-        _ = try self.emitStringConstant(bytes);
+        const index = try self.stringConstant(bytes);
+        _ = try self
+            .currentChunk()
+            .writeOpCode(.{ .constant = .{ .index = index } }, self.previous.line);
     }
 
     fn variable(self: *Parser, can_assign: bool) Error!void {
@@ -714,6 +735,19 @@ pub const Parser = struct {
         _ = try self.emitOpCode(.{ .call = .{ .arg_count = arg_count } });
     }
 
+    fn dot(self: *Parser, can_assign: bool) Error!void {
+        try self.consume(.identifier, "Expect property name after '.'.");
+        const name = self.previous;
+
+        const index = try self.stringConstant(name.lexeme);
+        if (can_assign and try self.match(.equal)) {
+            try self.expression();
+            _ = try self.emitOpCode(.{ .set_property = .{ .index = index } });
+        } else {
+            _ = try self.emitOpCode(.{ .get_property = .{ .index = index } });
+        }
+    }
+
     fn literal(self: *Parser, _: bool) Error!void {
         switch (self.previous.typ) {
             .nil => _ = try self.emitOpCode(.nil),
@@ -797,19 +831,6 @@ pub const Parser = struct {
 
     fn emitOpCode(self: *Parser, op_code: OpCode) Allocator.Error!usize {
         return self.currentChunk().writeOpCode(op_code, self.previous.line);
-    }
-
-    fn emitConstant(self: *Parser, value: anytype) Allocator.Error!usize {
-        const chunk = self.currentChunk();
-        const index = try chunk.addConstant(value);
-        return chunk.writeOpCode(.{ .constant = .{ .index = index } }, self.previous.line);
-    }
-
-    fn emitStringConstant(self: *Parser, bytes: []const u8) Allocator.Error!usize {
-        const index = try self.stringConstant(bytes);
-        return self
-            .currentChunk()
-            .writeOpCode(.{ .constant = .{ .index = index } }, self.previous.line);
     }
 
     fn emitVariable(self: *Parser, get_op: OpCode, set_op: OpCode, can_assign: bool) Error!usize {

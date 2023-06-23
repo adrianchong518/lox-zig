@@ -25,6 +25,9 @@ pub const Type = enum {
     native,
     closure,
 
+    class,
+    instance,
+
     fn T(comptime self: Type) type {
         return switch (self) {
             .string => String,
@@ -33,6 +36,9 @@ pub const Type = enum {
             .function => Function,
             .native => Native,
             .closure => Closure,
+
+            .class => Class,
+            .instance => Instance,
         };
     }
 };
@@ -343,6 +349,85 @@ pub const Closure = struct {
     }
 };
 
+pub const Class = struct {
+    object: Object,
+    name: *String,
+
+    pub fn create(vm: *Vm, name: *String) Allocator.Error!*Class {
+        const object = try Object.create(vm, .class);
+        const out = object.as(.class);
+
+        out.* = .{
+            .object = object.*,
+            .name = name,
+        };
+
+        return out;
+    }
+
+    pub fn destroy(self: *Class, vm: *Vm) void {
+        vm.allocator.destroy(self);
+    }
+
+    pub fn format(
+        self: *const Class,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = options;
+        _ = fmt;
+
+        try writer.print("<class {s} instance>", .{self.name.bytes});
+    }
+
+    pub fn eql(self: *const Class, other: *const Class) bool {
+        return @ptrToInt(self) == @ptrToInt(other);
+    }
+};
+
+pub const Instance = struct {
+    object: Object,
+    class: *Class,
+    fields: String.HashMap(Value),
+
+    pub fn create(vm: *Vm, class: *Class) Allocator.Error!*Instance {
+        const fields = String.HashMap(Value).init(vm.allocator);
+
+        const object = try Object.create(vm, .instance);
+        const out = object.as(.instance);
+
+        out.* = .{
+            .object = object.*,
+            .class = class,
+            .fields = fields,
+        };
+
+        return out;
+    }
+
+    pub fn destroy(self: *Instance, vm: *Vm) void {
+        self.fields.deinit();
+        vm.allocator.destroy(self);
+    }
+
+    pub fn format(
+        self: *const Instance,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = options;
+        _ = fmt;
+
+        try writer.print("<class {s} instance>", .{self.class.name.bytes});
+    }
+
+    pub fn eql(self: *const Instance, other: *const Instance) bool {
+        return @ptrToInt(self) == @ptrToInt(other);
+    }
+};
+
 pub fn create(vm: *Vm, comptime typ: Type) Allocator.Error!*Object {
     var object = &(try vm.allocator.create(typ.T())).object;
 
@@ -375,6 +460,9 @@ pub fn destroy(self: *Object, vm: *Vm) void {
         .function => self.as(.function).destroy(vm),
         .native => self.as(.native).destroy(vm),
         .closure => self.as(.closure).destroy(vm),
+
+        .class => self.as(.class).destroy(vm),
+        .instance => self.as(.instance).destroy(vm),
     }
 }
 
@@ -398,6 +486,9 @@ pub fn eql(self: *const Object, other: *const Object) bool {
         .function => self.asConst(.function).eql(other.asConst(.function)),
         .native => self.asConst(.native).eql(other.asConst(.native)),
         .closure => self.asConst(.closure).eql(other.asConst(.closure)),
+
+        .class => self.asConst(.class).eql(other.asConst(.class)),
+        .instance => self.asConst(.instance).eql(other.asConst(.instance)),
     };
 }
 
@@ -415,5 +506,8 @@ pub fn format(
         .function => self.asConst(.function).format(fmt, options, writer),
         .native => self.asConst(.native).format(fmt, options, writer),
         .closure => self.asConst(.closure).format(fmt, options, writer),
+
+        .class => self.asConst(.class).format(fmt, options, writer),
+        .instance => self.asConst(.instance).format(fmt, options, writer),
     };
 }

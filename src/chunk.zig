@@ -21,6 +21,11 @@ pub const OpCodeTag = enum(u8) {
     get_upvalue,
     set_upvalue,
 
+    get_property,
+    set_property,
+
+    class,
+
     pop,
     close_upvalue,
 
@@ -64,6 +69,11 @@ pub const OpCode = union(OpCodeTag) {
 
     get_upvalue: struct { index: usize },
     set_upvalue: struct { index: usize },
+
+    get_property: struct { index: usize },
+    set_property: struct { index: usize },
+
+    class: struct { index: usize },
 
     pop,
     close_upvalue,
@@ -161,6 +171,11 @@ pub const Chunk = struct {
             .get_upvalue => .{ .get_upvalue = .{ .index = self.nextUsize(offset) } },
             .set_upvalue => .{ .set_upvalue = .{ .index = self.nextUsize(offset) } },
 
+            .get_property => .{ .get_property = .{ .index = self.nextUsize(offset) } },
+            .set_property => .{ .set_property = .{ .index = self.nextUsize(offset) } },
+
+            .class => .{ .class = .{ .index = self.nextUsize(offset) } },
+
             .pop => .pop,
             .close_upvalue => .close_upvalue,
 
@@ -248,6 +263,11 @@ pub const Chunk = struct {
 
             .get_upvalue => |op| try self.writeInt(op.index, line),
             .set_upvalue => |op| try self.writeInt(op.index, line),
+
+            .get_property => |op| try self.writeInt(op.index, line),
+            .set_property => |op| try self.writeInt(op.index, line),
+
+            .class => |op| try self.writeInt(op.index, line),
 
             .jump => |op| try self.writeInt(op.offset, line),
             .jump_if_false => |op| try self.writeInt(op.offset, line),

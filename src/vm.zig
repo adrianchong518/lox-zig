@@ -212,6 +212,56 @@ fn runInstruction(self: *Vm, instruction: OpCode, frame: *CallFrame) Error!Statu
             frame.closure.upvalues[op.index].location.* = value;
         },
 
+        .get_property => |op| {
+            const instance = instance: {
+                const value = self.stack.peek(0);
+                if (!value.isObjectType(.instance)) {
+                    try self.runtimeError(
+                        "Only instances have properties, but got {#}",
+                        .{Value.from(value)},
+                    );
+                    return error.RuntimePanic;
+                }
+                break :instance value.object.as(.instance);
+            };
+            const name = frame.chunk().constants.items[op.index].object.as(.string);
+
+            const value = instance.fields.get(name) orelse {
+                try self.runtimeError("Undefined property '{0}' ({0#})", .{Value.from(name)});
+                return error.RuntimePanic;
+            };
+
+            _ = self.stack.pop(); // instance
+            self.stack.push(value);
+        },
+        .set_property => |op| {
+            const instance = instance: {
+                const value = self.stack.peek(1);
+                if (!value.isObjectType(.instance)) {
+                    try self.runtimeError(
+                        "Only instances have properties, but got {#}",
+                        .{Value.from(value)},
+                    );
+                    return error.RuntimePanic;
+                }
+                break :instance value.object.as(.instance);
+            };
+            const value = self.stack.peek(0);
+            const name = frame.chunk().constants.items[op.index].object.as(.string);
+
+            try instance.fields.put(name, value);
+
+            _ = self.stack.pop();
+            _ = self.stack.pop();
+            self.stack.push(value);
+        },
+
+        .class => |op| {
+            const name = frame.chunk().constants.items[op.index].object.as(.string);
+            const class = try Object.Class.create(self, name);
+            self.stack.push(Value.from(class));
+        },
+
         .pop => _ = self.stack.pop(),
         .close_upvalue => {
             self.closeUpvalue(self.stack.peekPtr(0));
@@ -347,6 +397,15 @@ fn callValue(self: *Vm, callee: Value, arg_count: u8) Error!void {
 
                 return;
             },
+
+            .class => {
+                const class = callee.object.as(.class);
+                const instance = try Object.Instance.create(self, class);
+                self.stack.peekPtr(arg_count).* = Value.from(instance);
+
+                return;
+            },
+
             else => {},
         }
     }

@@ -74,7 +74,7 @@ fn alloc(ctx: *anyopaque, len: usize, ptr_align: u8, ret_addr: usize) ?[*]u8 {
 fn free(ctx: *anyopaque, buf: []u8, log2_buf_align: u8, ret_addr: usize) void {
     const self = @ptrCast(*GcAllocator, @alignCast(@alignOf(GcAllocator), ctx));
 
-    log.debug("free {*} {}", .{ buf.ptr, buf.len });
+    if (config.log_gc) log.debug("free {*} {}", .{ buf.ptr, buf.len });
     self.bytes_allocated -= buf.len;
 
     return self.parent_allocator.rawFree(buf, log2_buf_align, ret_addr);
@@ -89,7 +89,7 @@ fn resize(
 ) bool {
     const self = @ptrCast(*GcAllocator, @alignCast(@alignOf(GcAllocator), ctx));
 
-    log.debug("resize {*} {} -> {}", .{ buf.ptr, buf.len, new_len });
+    if (config.log_gc) log.debug("resize {*} {} -> {}", .{ buf.ptr, buf.len, new_len });
     self.bytes_allocated = self.bytes_allocated - buf.len + new_len;
 
     if (new_len > buf.len) {
@@ -144,11 +144,7 @@ fn markRoots(self: *GcAllocator) Allocator.Error!void {
         try self.markValue(v);
     }
 
-    var globals_entries = self.vm.globals.iterator();
-    while (globals_entries.next()) |e| {
-        try self.markObject(&e.key_ptr.*.object);
-        try self.markValue(e.value_ptr.*);
-    }
+    try self.markValueTable(&self.vm.globals);
 
     for (self.vm.frames.items()) |f| {
         try self.markObject(&f.closure.object);
@@ -185,6 +181,14 @@ fn markValues(self: *GcAllocator, values: []Value) Allocator.Error!void {
     }
 }
 
+fn markValueTable(self: *GcAllocator, table: *Object.String.HashMap(Value)) Allocator.Error!void {
+    var entries = table.iterator();
+    while (entries.next()) |e| {
+        try self.markObject(&e.key_ptr.*.object);
+        try self.markValue(e.value_ptr.*);
+    }
+}
+
 fn markObject(self: *GcAllocator, object: *Object) Allocator.Error!void {
     if (object.is_marked) {
         if (config.log_gc) log.debug("marked {#}", .{Value.from(object)});
@@ -214,6 +218,15 @@ fn traceReferences(self: *GcAllocator) Allocator.Error!void {
                 for (closure.upvalues[0..closure.upvalue_count]) |u| {
                     try self.markObject(&u.object);
                 }
+            },
+            .class => {
+                const class = obj.as(.class);
+                try self.markObject(&class.name.object);
+            },
+            .instance => {
+                const instance = obj.as(.instance);
+                try self.markObject(&instance.class.object);
+                try self.markValueTable(&instance.fields);
             },
             .native, .string => {},
         }

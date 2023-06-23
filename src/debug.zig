@@ -51,6 +51,11 @@ pub fn disassembleInstruction(chunk: Chunk, offset: usize) usize {
         .get_upvalue => |op| printInt("OP_GET_UPVALUE", op.index),
         .set_upvalue => |op| printInt("OP_SET_UPVALUE", op.index),
 
+        .get_property => |op| printConstant("OP_GET_PROPERTY", chunk, op.index),
+        .set_property => |op| printConstant("OP_SET_PROPERTY", chunk, op.index),
+
+        .class => |op| printConstant("OP_CLASS", chunk, op.index),
+
         .pop => printSimple("OP_POP"),
         .close_upvalue => printSimple("OP_CLOSE_UPVALUE"),
 
