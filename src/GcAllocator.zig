@@ -144,7 +144,7 @@ fn markRoots(self: *GcAllocator) Allocator.Error!void {
         try self.markValue(v);
     }
 
-    try self.markValueTable(&self.vm.globals);
+    try self.markValueTable(self.vm.globals);
 
     for (self.vm.frames.items()) |f| {
         try self.markObject(&f.closure.object);
@@ -155,8 +155,12 @@ fn markRoots(self: *GcAllocator) Allocator.Error!void {
         try self.markObject(&u.object);
     }
 
+    if (self.vm.init_string) |s| {
+        try self.markObject(&s.object);
+    }
+
     if (self.parser) |p| {
-        var compiler: ?*Compiler = p.current_compiler;
+        var compiler: ?*Compiler = p.compiler;
         while (compiler) |c| : (compiler = c.enclosing) {
             try self.markObject(&c.function.object);
 
@@ -181,7 +185,7 @@ fn markValues(self: *GcAllocator, values: []Value) Allocator.Error!void {
     }
 }
 
-fn markValueTable(self: *GcAllocator, table: *Object.String.HashMap(Value)) Allocator.Error!void {
+fn markValueTable(self: *GcAllocator, table: Object.String.HashMap(Value)) Allocator.Error!void {
     var entries = table.iterator();
     while (entries.next()) |e| {
         try self.markObject(&e.key_ptr.*.object);
@@ -222,11 +226,22 @@ fn traceReferences(self: *GcAllocator) Allocator.Error!void {
             .class => {
                 const class = obj.as(.class);
                 try self.markObject(&class.name.object);
+
+                var methods_entries = class.methods.iterator();
+                while (methods_entries.next()) |e| {
+                    try self.markObject(&e.key_ptr.*.object);
+                    try self.markObject(&e.value_ptr.*.object);
+                }
             },
             .instance => {
                 const instance = obj.as(.instance);
                 try self.markObject(&instance.class.object);
-                try self.markValueTable(&instance.fields);
+                try self.markValueTable(instance.fields);
+            },
+            .bound_method => {
+                const method = obj.as(.bound_method);
+                try self.markValue(method.receiver);
+                try self.markObject(&method.method.object);
             },
             .native, .string => {},
         }

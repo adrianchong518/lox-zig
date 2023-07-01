@@ -54,6 +54,14 @@ pub const Token = struct {
         eof,
     };
 
+    pub fn initSynthetic(lexeme: []const u8) Token {
+        return .{
+            .typ = undefined,
+            .lexeme = lexeme,
+            .line = undefined,
+        };
+    }
+
     pub fn eqlLexeme(self: Token, other: Token) bool {
         return mem.eql(u8, self.lexeme, other.lexeme);
     }

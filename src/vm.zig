@@ -27,6 +27,7 @@ globals: Object.String.HashMap(Value),
 
 frames: FixedCapacityStack(CallFrame),
 
+init_string: ?*Object.String = null,
 objects: ?*Object = null,
 open_upvalues: ?*Object.Upvalue = null,
 
@@ -73,6 +74,8 @@ pub fn init(self: *Vm, backing_allocator: Allocator) Allocator.Error!void {
 
     self.frames = try FixedCapacityStack(CallFrame).init(allocator, frames_size);
 
+    self.init_string = try Object.String.createCopy(self, "init");
+
     try self.defineNative("clock", clockNative, 0);
 }
 
@@ -82,6 +85,8 @@ pub fn deinit(self: *Vm) void {
     self.globals.deinit();
     self.strings.deinit();
     self.stack.deinit(self.allocator);
+
+    self.init_string = null;
 
     var object = self.objects;
     while (object) |obj| {
@@ -135,6 +140,11 @@ fn runInstruction(self: *Vm, instruction: OpCode, frame: *CallFrame) Error!Statu
         .call => |op| {
             const callee = self.stack.peek(op.arg_count);
             try self.callValue(callee, op.arg_count);
+        },
+
+        .invoke => |op| {
+            const name = frame.chunk().constants.items[op.index].object.as(.string);
+            try self.invoke(name, op.arg_count);
         },
 
         .@"return" => {
@@ -226,22 +236,19 @@ fn runInstruction(self: *Vm, instruction: OpCode, frame: *CallFrame) Error!Statu
             };
             const name = frame.chunk().constants.items[op.index].object.as(.string);
 
-            const value = instance.fields.get(name) orelse {
-                try self.runtimeError("Undefined property '{0}' ({0#})", .{Value.from(name)});
-                return error.RuntimePanic;
-            };
+            if (instance.fields.get(name)) |value| {
+                _ = self.stack.pop(); // instance
+                self.stack.push(value);
+                return null;
+            }
 
-            _ = self.stack.pop(); // instance
-            self.stack.push(value);
+            try self.bindMethod(Value.from(instance), instance.class, name);
         },
         .set_property => |op| {
             const instance = instance: {
                 const value = self.stack.peek(1);
                 if (!value.isObjectType(.instance)) {
-                    try self.runtimeError(
-                        "Only instances have properties, but got {#}",
-                        .{Value.from(value)},
-                    );
+                    try self.runtimeError("Only instances have properties, but got {#}", .{value});
                     return error.RuntimePanic;
                 }
                 break :instance value.object.as(.instance);
@@ -260,6 +267,39 @@ fn runInstruction(self: *Vm, instruction: OpCode, frame: *CallFrame) Error!Statu
             const name = frame.chunk().constants.items[op.index].object.as(.string);
             const class = try Object.Class.create(self, name);
             self.stack.push(Value.from(class));
+        },
+        .method => |op| {
+            const name = frame.chunk().constants.items[op.index].object.as(.string);
+            try self.defineMethod(name);
+        },
+        .inherit => {
+            const superclass = superclass: {
+                const value = self.stack.peek(1);
+                if (!value.isObjectType(.class)) {
+                    try self.runtimeError("Superclass must be a class, but got {#}", .{value});
+                    return error.RuntimePanic;
+                }
+                break :superclass value.object.as(.class);
+            };
+
+            const subclass = self.stack.peek(0).object.as(.class);
+
+            // This is safe as `subclass.methods` must be empty when OP_INHERIT is ran
+            subclass.methods = try superclass.methods.clone();
+
+            _ = self.stack.pop();
+        },
+        .get_super => |op| {
+            const name = frame.chunk().constants.items[op.index].object.as(.string);
+            const superclass = self.stack.pop().object.as(.class);
+            const this = self.stack.peek(0);
+
+            try self.bindMethod(this, superclass, name);
+        },
+        .super_invoke => |op| {
+            const name = frame.chunk().constants.items[op.index].object.as(.string);
+            const superclass = self.stack.pop().object.as(.class);
+            try self.invokeFromClass(superclass, name, op.arg_count);
         },
 
         .pop => _ = self.stack.pop(),
@@ -403,17 +443,43 @@ fn callValue(self: *Vm, callee: Value, arg_count: u8) Error!void {
                 const instance = try Object.Instance.create(self, class);
                 self.stack.peekPtr(arg_count).* = Value.from(instance);
 
+                if (class.methods.get(self.init_string.?)) |initializer| {
+                    return self.call(initializer, arg_count);
+                }
+
+                if (arg_count != 0) {
+                    try self.runtimeError("Expected 0 arguments but got {}", .{arg_count});
+                    return error.RuntimePanic;
+                }
+
                 return;
+            },
+
+            .bound_method => {
+                const bound_method = callee.object.as(.bound_method);
+                self.stack.peekPtr(arg_count).* = bound_method.receiver;
+                return self.call(bound_method.method, arg_count);
             },
 
             else => {},
         }
     }
 
-    try self.runtimeError(
-        "Can only call functions and classes, but got: {s}",
-        .{@tagName(callee)},
-    );
+    switch (callee) {
+        .object => |obj| {
+            try self.runtimeError(
+                "Can only call functions and classes, but got: object.{s}",
+                .{@tagName(obj.typ)},
+            );
+        },
+        else => {
+            try self.runtimeError(
+                "Can only call functions and classes, but got: {s}",
+                .{@tagName(callee)},
+            );
+        },
+    }
+
     return error.RuntimePanic;
 }
 
@@ -433,6 +499,41 @@ fn call(self: *Vm, closure: *Object.Closure, arg_count: u8) Error!void {
         try self.runtimeError("Stack overflow.", .{});
         return error.RuntimePanic;
     };
+}
+
+fn invoke(self: *Vm, name: *Object.String, arg_count: u8) Error!void {
+    const instance = instance: {
+        const value = self.stack.peek(arg_count);
+        if (!value.isObjectType(.instance)) {
+            try self.runtimeError(
+                "Only instances have methods, but got {#}",
+                .{Value.from(value)},
+            );
+            return error.RuntimePanic;
+        }
+        break :instance value.object.as(.instance);
+    };
+
+    if (instance.fields.get(name)) |value| {
+        self.stack.peekPtr(arg_count).* = value;
+        return self.callValue(value, arg_count);
+    }
+
+    try self.invokeFromClass(instance.class, name, arg_count);
+}
+
+fn invokeFromClass(
+    self: *Vm,
+    class: *Object.Class,
+    name: *Object.String,
+    arg_count: u8,
+) Error!void {
+    if (class.methods.get(name)) |method| {
+        return self.call(method, arg_count);
+    }
+
+    try self.runtimeError("Undefined property '{}'.", .{name});
+    return error.RuntimePanic;
 }
 
 fn captureUpvalue(self: *Vm, local: *Value) Allocator.Error!*Object.Upvalue {
@@ -466,6 +567,25 @@ fn closeUpvalue(self: *Vm, last: *Value) void {
         u.closed = u.location.*;
         u.location = &u.closed;
     }
+}
+
+fn defineMethod(self: *Vm, name: *Object.String) Allocator.Error!void {
+    const method = self.stack.peek(0).object.as(.closure);
+    const class = self.stack.peek(1).object.as(.class);
+    try class.methods.put(name, method);
+    _ = self.stack.pop();
+}
+
+fn bindMethod(self: *Vm, receiver: Value, class: *Object.Class, name: *Object.String) Error!void {
+    if (class.methods.get(name)) |method| {
+        const bound = try Object.BoundMethod.create(self, receiver, method);
+        _ = self.stack.pop(); // instance
+        self.stack.push(Value.from(bound));
+        return;
+    }
+
+    try self.runtimeError("Undefined property '{0}' ({0#})", .{Value.from(name)});
+    return error.RuntimePanic;
 }
 
 fn runtimeError(self: *Vm, comptime fmt: []const u8, args: anytype) File.WriteError!void {

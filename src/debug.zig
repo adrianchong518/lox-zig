@@ -36,6 +36,7 @@ pub fn disassembleInstruction(chunk: Chunk, offset: usize) usize {
 
     switch (instruction) {
         .call => |op| printInt("OP_CALL", op.arg_count),
+        .invoke => |op| printInvoke("OP_INVOKE", chunk, op.arg_count, op.index),
         .@"return" => printSimple("OP_RETURN"),
 
         .constant => |op| printConstant("OP_CONSTANT", chunk, op.index),
@@ -55,6 +56,10 @@ pub fn disassembleInstruction(chunk: Chunk, offset: usize) usize {
         .set_property => |op| printConstant("OP_SET_PROPERTY", chunk, op.index),
 
         .class => |op| printConstant("OP_CLASS", chunk, op.index),
+        .method => |op| printConstant("OP_METHOD", chunk, op.index),
+        .inherit => printSimple("OP_INHERIT"),
+        .get_super => |op| printConstant("OP_GET_SUPER", chunk, op.index),
+        .super_invoke => |op| printInvoke("OP_SUPER_INVOKE", chunk, op.arg_count, op.index),
 
         .pop => printSimple("OP_POP"),
         .close_upvalue => printSimple("OP_CLOSE_UPVALUE"),
@@ -126,4 +131,13 @@ fn printClosure(name: []const u8, chunk: Chunk, function_offset: usize, new_offs
             .{ @tagName(upvalue.locality), upvalue.index },
         );
     }
+}
+
+fn printInvoke(name: []const u8, chunk: Chunk, arg_count: u8, constant_index: usize) void {
+    std.debug.print("{s: <16} ({: >4} args) {: >4} {#}\n", .{
+        name,
+        arg_count,
+        constant_index,
+        chunk.constants.items[constant_index],
+    });
 }

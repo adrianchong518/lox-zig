@@ -27,6 +27,7 @@ pub const Type = enum {
 
     class,
     instance,
+    bound_method,
 
     fn T(comptime self: Type) type {
         return switch (self) {
@@ -39,6 +40,7 @@ pub const Type = enum {
 
             .class => Class,
             .instance => Instance,
+            .bound_method => BoundMethod,
         };
     }
 };
@@ -341,7 +343,11 @@ pub const Closure = struct {
         options: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
-        try self.function.format(fmt, options, writer);
+        if (std.mem.eql(u8, fmt, "#")) {
+            try writer.print("<closure {#}>", .{self.function});
+        } else {
+            try self.function.format(fmt, options, writer);
+        }
     }
 
     pub fn eql(self: *const Closure, other: *const Closure) bool {
@@ -352,20 +358,25 @@ pub const Closure = struct {
 pub const Class = struct {
     object: Object,
     name: *String,
+    methods: String.HashMap(*Closure),
 
     pub fn create(vm: *Vm, name: *String) Allocator.Error!*Class {
+        const methods = String.HashMap(*Closure).init(vm.allocator);
+
         const object = try Object.create(vm, .class);
         const out = object.as(.class);
 
         out.* = .{
             .object = object.*,
             .name = name,
+            .methods = methods,
         };
 
         return out;
     }
 
     pub fn destroy(self: *Class, vm: *Vm) void {
+        self.methods.deinit();
         vm.allocator.destroy(self);
     }
 
@@ -428,6 +439,46 @@ pub const Instance = struct {
     }
 };
 
+pub const BoundMethod = struct {
+    object: Object,
+    receiver: Value,
+    method: *Closure,
+
+    pub fn create(vm: *Vm, receiver: Value, method: *Closure) Allocator.Error!*BoundMethod {
+        const object = try Object.create(vm, .bound_method);
+        const out = object.as(.bound_method);
+
+        out.* = .{
+            .object = object.*,
+            .receiver = receiver,
+            .method = method,
+        };
+
+        return out;
+    }
+
+    pub fn destroy(self: *BoundMethod, vm: *Vm) void {
+        vm.allocator.destroy(self);
+    }
+
+    pub fn format(
+        self: *const BoundMethod,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        if (std.mem.eql(u8, fmt, "#")) {
+            try writer.print("<bound method {#} {#} >", .{ self.receiver, Value.from(self.method) });
+        } else {
+            try self.method.format(fmt, options, writer);
+        }
+    }
+
+    pub fn eql(self: *const BoundMethod, other: *const BoundMethod) bool {
+        return @ptrToInt(self) == @ptrToInt(other);
+    }
+};
+
 pub fn create(vm: *Vm, comptime typ: Type) Allocator.Error!*Object {
     var object = &(try vm.allocator.create(typ.T())).object;
 
@@ -463,6 +514,7 @@ pub fn destroy(self: *Object, vm: *Vm) void {
 
         .class => self.as(.class).destroy(vm),
         .instance => self.as(.instance).destroy(vm),
+        .bound_method => self.as(.bound_method).destroy(vm),
     }
 }
 
@@ -489,6 +541,7 @@ pub fn eql(self: *const Object, other: *const Object) bool {
 
         .class => self.asConst(.class).eql(other.asConst(.class)),
         .instance => self.asConst(.instance).eql(other.asConst(.instance)),
+        .bound_method => self.asConst(.bound_method).eql(other.asConst(.bound_method)),
     };
 }
 
@@ -509,5 +562,6 @@ pub fn format(
 
         .class => self.asConst(.class).format(fmt, options, writer),
         .instance => self.asConst(.instance).format(fmt, options, writer),
+        .bound_method => self.asConst(.bound_method).format(fmt, options, writer),
     };
 }

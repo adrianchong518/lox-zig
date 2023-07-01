@@ -1,4 +1,5 @@
 const std = @import("std");
+const mem = std.mem;
 const fmt = std.fmt;
 const io = std.io;
 const Allocator = std.mem.Allocator;
@@ -119,8 +120,8 @@ const ParseRule = struct {
         r.set(.@"or", .{ .prefix = null, .infix = Parser.@"or", .precedence = .@"or" });
         r.set(.print, .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.@"return", .{ .prefix = null, .infix = null, .precedence = .none });
-        r.set(.super, .{ .prefix = null, .infix = null, .precedence = .none });
-        r.set(.this, .{ .prefix = null, .infix = null, .precedence = .none });
+        r.set(.super, .{ .prefix = Parser.super, .infix = null, .precedence = .none });
+        r.set(.this, .{ .prefix = Parser.this, .infix = null, .precedence = .none });
         r.set(.true, .{ .prefix = Parser.literal, .infix = null, .precedence = .none });
         r.set(.@"var", .{ .prefix = null, .infix = null, .precedence = .none });
         r.set(.@"while", .{ .prefix = null, .infix = null, .precedence = .none });
@@ -135,6 +136,11 @@ const ParseRule = struct {
     }
 };
 
+const ClassCompiler = struct {
+    enclosing: ?*ClassCompiler,
+    has_superclass: bool = false,
+};
+
 pub const Compiler = struct {
     enclosing: ?*Compiler,
 
@@ -147,7 +153,7 @@ pub const Compiler = struct {
     locals: ArrayList(Local),
     scope_depth: usize = 0,
 
-    const FunctionType = enum { function, script };
+    const FunctionType = enum { function, method, initializer, script };
 
     const Local = struct {
         name: Token,
@@ -160,11 +166,16 @@ pub const Compiler = struct {
 
     fn init(vm: *Vm, enclosing: ?*Compiler, function_type: FunctionType) Allocator.Error!Compiler {
         var locals = ArrayList(Local).init(vm.allocator);
-        try locals.append(.{
+        const local = if (function_type == .function) Local{
             .name = .{ .typ = undefined, .lexeme = "", .line = 0 },
             .depth = 0,
             .state = .initialized,
-        });
+        } else Local{
+            .name = .{ .typ = undefined, .lexeme = "this", .line = 0 },
+            .depth = 0,
+            .state = .initialized,
+        };
+        try locals.append(local);
 
         return .{
             .enclosing = enclosing,
@@ -255,7 +266,8 @@ pub const Parser = struct {
     previous: Token = undefined,
     current: Token = undefined,
 
-    current_compiler: *Compiler,
+    compiler: *Compiler,
+    class_compiler: ?*ClassCompiler = null,
     innermostLoop: ?struct {
         start: usize = 0,
         scope_depth: usize = 0,
@@ -270,7 +282,7 @@ pub const Parser = struct {
         return .{
             .vm = undefined,
             .scanner = undefined,
-            .current_compiler = undefined,
+            .compiler = undefined,
         };
     }
 
@@ -278,7 +290,7 @@ pub const Parser = struct {
         self.* = .{
             .vm = vm,
             .scanner = scanner,
-            .current_compiler = initial_compiler,
+            .compiler = initial_compiler,
         };
         self.vm.gc_allocator.attach_parser(self);
     }
@@ -290,24 +302,23 @@ pub const Parser = struct {
     }
 
     fn startCompiler(self: *Parser, compiler: *Compiler) Allocator.Error!void {
-        self.current_compiler = compiler;
+        self.compiler = compiler;
 
         const name = try Object.String.createCopy(self.vm, self.previous.lexeme);
-        self.current_compiler.function.name = name;
+        self.compiler.function.name = name;
     }
 
     fn popCompiler(self: *Parser) Error!*Object.Function {
-        std.debug.assert(self.current_compiler.enclosing != null);
+        std.debug.assert(self.compiler.enclosing != null);
 
         const function = self.endCompiler();
-        self.current_compiler = self.current_compiler.enclosing.?;
+        self.compiler = self.compiler.enclosing.?;
         return function;
     }
 
     fn endCompiler(self: *Parser) Error!*Object.Function {
-        _ = try self.emitOpCode(.nil);
-        _ = try self.emitOpCode(.@"return");
-        const function = self.current_compiler.function;
+        _ = try self.emitReturn();
+        const function = self.compiler.function;
 
         if (config.print_code and !self.had_error) {
             debug.disassemble(self.currentChunk().*, function);
@@ -332,15 +343,67 @@ pub const Parser = struct {
 
     fn classDeclaration(self: *Parser) Error!void {
         try self.consume(.identifier, "Expect class name");
-        const name = self.previous;
-        try self.declareVariable(name, .uninitialized);
+        const class_name = self.previous;
+        try self.declareVariable(class_name, .uninitialized);
 
-        const index = try self.stringConstant(name.lexeme);
+        const index = try self.stringConstant(class_name.lexeme);
         _ = try self.emitOpCode(.{ .class = .{ .index = index } });
-        try self.defineVariable(name);
+        try self.defineVariable(class_name);
+
+        var class_compiler = ClassCompiler{ .enclosing = self.class_compiler };
+        self.class_compiler = &class_compiler;
+
+        if (try self.match(.less)) {
+            try self.consume(.identifier, "Expect superclass name.");
+            const superclass_name = self.previous;
+
+            try self.namedVariable(superclass_name, false);
+            try self.namedVariable(class_name, false);
+
+            if (superclass_name.eqlLexeme(class_name)) {
+                try self.errorAtPrev("A class can't inherit from itself");
+            }
+
+            self.beginScope();
+            const super_token = Token.initSynthetic("super");
+            try self.compiler.addLocal(super_token, .uninitialized);
+            try self.defineVariable(super_token);
+
+            _ = try self.emitOpCode(.inherit);
+            class_compiler.has_superclass = true;
+        }
+
+        try self.namedVariable(class_name, false);
 
         try self.consume(.left_brace, "Expect '{' before class body.");
+
+        while (!self.check(.right_brace) and !self.check(.eof)) {
+            try self.method();
+        }
+
         try self.consume(.right_brace, "Expect '}' after class body.");
+
+        _ = try self.emitOpCode(.pop);
+
+        if (class_compiler.has_superclass) {
+            try self.endScope();
+        }
+
+        self.class_compiler = class_compiler.enclosing;
+    }
+
+    fn method(self: *Parser) Error!void {
+        try self.consume(.identifier, "Expect method name.");
+        const name = self.previous;
+
+        const typ = if (mem.eql(u8, name.lexeme, "init"))
+            Compiler.FunctionType.initializer
+        else
+            Compiler.FunctionType.method;
+        _ = try self.emitFunction(typ);
+
+        const index = try self.stringConstant(name.lexeme);
+        _ = try self.emitOpCode(.{ .method = .{ .index = index } });
     }
 
     fn funStatement(self: *Parser) Error!void {
@@ -381,10 +444,10 @@ pub const Parser = struct {
     fn declareVariable(self: *Parser, name: Token, state: Compiler.Local.State) Error!void {
         if (!self.inScope()) return;
 
-        var i = self.current_compiler.locals.items.len;
+        var i = self.compiler.locals.items.len;
         while (i > 0) : (i -= 1) {
-            const local = self.current_compiler.locals.items[i - 1];
-            if (local.state == .initialized and local.depth < self.current_compiler.scope_depth) {
+            const local = self.compiler.locals.items[i - 1];
+            if (local.state == .initialized and local.depth < self.compiler.scope_depth) {
                 break;
             }
 
@@ -393,12 +456,12 @@ pub const Parser = struct {
             }
         }
 
-        try self.current_compiler.addLocal(name, state);
+        try self.compiler.addLocal(name, state);
     }
 
     fn defineVariable(self: *Parser, name: ?Token) Error!void {
         if (self.inScope()) {
-            self.current_compiler.lastLocalPtr().state = .initialized;
+            self.compiler.lastLocalPtr().state = .initialized;
             return;
         }
 
@@ -460,7 +523,7 @@ pub const Parser = struct {
         const surroundingLoop = self.innermostLoop;
         self.innermostLoop = .{
             .start = self.currentChunk().code.items.len,
-            .scope_depth = self.current_compiler.scope_depth,
+            .scope_depth = self.compiler.scope_depth,
         };
 
         // condition
@@ -498,7 +561,7 @@ pub const Parser = struct {
         const surroundingLoop = self.innermostLoop;
         self.innermostLoop = .{
             .start = self.currentChunk().code.items.len,
-            .scope_depth = self.current_compiler.scope_depth,
+            .scope_depth = self.compiler.scope_depth,
         };
 
         // loop condition clause
@@ -542,8 +605,8 @@ pub const Parser = struct {
         try self.consume(.semicolon, "Expect ';' after 'continue'.");
 
         if (self.innermostLoop) |loop| {
-            while (self.current_compiler.locals.getLastOrNull()) |local| {
-                if (local.depth <= self.current_compiler.scope_depth) break;
+            while (self.compiler.locals.getLastOrNull()) |local| {
+                if (local.depth <= self.compiler.scope_depth) break;
                 _ = try self.emitOpCode(.pop);
             }
             _ = try self.emitLoop(loop.start);
@@ -553,18 +616,21 @@ pub const Parser = struct {
     }
 
     fn returnStatement(self: *Parser) Error!void {
-        if (self.current_compiler.function_type == .script) {
+        if (self.compiler.function_type == .script) {
             try self.errorAtPrev("Can't return from top-level code.");
         }
 
         if (try self.match(.semicolon)) {
-            _ = try self.emitOpCode(.nil);
+            _ = try self.emitReturn();
         } else {
+            if (self.compiler.function_type == .initializer) {
+                try self.errorAtPrev("Can't return a value from an initializer.");
+            }
+
             try self.expression();
             try self.consume(.semicolon, "Expect ';' after return value");
+            _ = try self.emitOpCode(.@"return");
         }
-
-        _ = try self.emitOpCode(.@"return");
     }
 
     fn expressionStatement(self: *Parser) Error!void {
@@ -586,27 +652,27 @@ pub const Parser = struct {
     }
 
     fn beginScope(self: *Parser) void {
-        self.current_compiler.scope_depth += 1;
+        self.compiler.scope_depth += 1;
     }
 
     fn endScope(self: *Parser) Allocator.Error!void {
-        std.debug.assert(self.current_compiler.scope_depth > 0);
-        self.current_compiler.scope_depth -= 1;
+        std.debug.assert(self.compiler.scope_depth > 0);
+        self.compiler.scope_depth -= 1;
 
-        while (self.current_compiler.locals.getLastOrNull()) |local| {
-            if (local.depth <= self.current_compiler.scope_depth) break;
+        while (self.compiler.locals.getLastOrNull()) |local| {
+            if (local.depth <= self.compiler.scope_depth) break;
 
             if (local.is_captured) {
                 _ = try self.emitOpCode(.close_upvalue);
             } else {
                 _ = try self.emitOpCode(.pop);
             }
-            _ = self.current_compiler.locals.pop();
+            _ = self.compiler.locals.pop();
         }
     }
 
     fn inScope(self: Parser) bool {
-        return self.current_compiler.scope_depth > 0;
+        return self.compiler.scope_depth > 0;
     }
 
     fn number(self: *Parser, _: bool) Error!void {
@@ -625,15 +691,56 @@ pub const Parser = struct {
             .writeOpCode(.{ .constant = .{ .index = index } }, self.previous.line);
     }
 
+    fn this(self: *Parser, _: bool) Error!void {
+        if (self.class_compiler == null) {
+            try self.errorAtPrev("Can't use 'this' outside of a class.");
+            return;
+        }
+
+        try self.variable(false);
+    }
+
+    fn super(self: *Parser, _: bool) Error!void {
+        if (self.class_compiler) |c| {
+            if (!c.has_superclass) {
+                try self.errorAtPrev("Can't use 'super' in a class with no superclass.");
+            }
+        } else {
+            try self.errorAtPrev("Can't use 'super' outside of a class.");
+        }
+
+        try self.consume(.dot, "Expect '.' after 'super'");
+        try self.consume(.identifier, "Expect superclass method name.");
+        const method_name = self.previous;
+
+        try self.namedVariable(Token.initSynthetic("this"), false);
+
+        const index = try self.stringConstant(method_name.lexeme);
+        if (try self.match(.left_paren)) {
+            const arg_count = try self.argument_list();
+            try self.namedVariable(Token.initSynthetic("super"), false);
+            _ = try self.emitOpCode(.{ .super_invoke = .{
+                .arg_count = arg_count,
+                .index = index,
+            } });
+        } else {
+            try self.namedVariable(Token.initSynthetic("super"), false);
+            _ = try self.emitOpCode(.{ .get_super = .{ .index = index } });
+        }
+    }
+
     fn variable(self: *Parser, can_assign: bool) Error!void {
-        const name = self.previous;
-        if (try self.current_compiler.resolveLocal(self, name)) |index| {
+        try self.namedVariable(self.previous, can_assign);
+    }
+
+    fn namedVariable(self: *Parser, name: Token, can_assign: bool) Error!void {
+        if (try self.compiler.resolveLocal(self, name)) |index| {
             _ = try self.emitVariable(
                 .{ .get_local = .{ .index = index } },
                 .{ .set_local = .{ .index = index } },
                 can_assign,
             );
-        } else if (try self.current_compiler.resolveUpvalue(self, name)) |index| {
+        } else if (try self.compiler.resolveUpvalue(self, name)) |index| {
             _ = try self.emitVariable(
                 .{ .get_upvalue = .{ .index = index } },
                 .{ .set_upvalue = .{ .index = index } },
@@ -713,26 +820,27 @@ pub const Parser = struct {
     }
 
     fn call(self: *Parser, _: bool) Error!void {
-        const arg_count = arg: {
-            var arg_count: u8 = 0;
-            if (!self.check(.right_paren)) {
-                while (true) {
-                    try self.expression();
-
-                    if (arg_count >= 255) {
-                        try self.errorAtPrev("Can't have more than 255 arguments");
-                    } else {
-                        arg_count += 1;
-                    }
-
-                    if (!try self.match(.comma)) break;
-                }
-            }
-            try self.consume(.right_paren, "Expect ')' after arguments.");
-            break :arg arg_count;
-        };
-
+        const arg_count = try self.argument_list();
         _ = try self.emitOpCode(.{ .call = .{ .arg_count = arg_count } });
+    }
+
+    fn argument_list(self: *Parser) Error!u8 {
+        var arg_count: u8 = 0;
+        if (!self.check(.right_paren)) {
+            while (true) {
+                try self.expression();
+
+                if (arg_count >= 255) {
+                    try self.errorAtPrev("Can't have more than 255 arguments");
+                } else {
+                    arg_count += 1;
+                }
+
+                if (!try self.match(.comma)) break;
+            }
+        }
+        try self.consume(.right_paren, "Expect ')' after arguments.");
+        return arg_count;
     }
 
     fn dot(self: *Parser, can_assign: bool) Error!void {
@@ -743,6 +851,9 @@ pub const Parser = struct {
         if (can_assign and try self.match(.equal)) {
             try self.expression();
             _ = try self.emitOpCode(.{ .set_property = .{ .index = index } });
+        } else if (try self.match(.left_paren)) {
+            const arg_count = try self.argument_list();
+            _ = try self.emitOpCode(.{ .invoke = .{ .arg_count = arg_count, .index = index } });
         } else {
             _ = try self.emitOpCode(.{ .get_property = .{ .index = index } });
         }
@@ -814,7 +925,7 @@ pub const Parser = struct {
     }
 
     fn currentChunk(self: *Parser) *Chunk {
-        return &self.current_compiler.function.chunk;
+        return &self.compiler.function.chunk;
     }
 
     fn synchronize(self: *Parser) Error!void {
@@ -843,7 +954,7 @@ pub const Parser = struct {
     }
 
     fn emitFunction(self: *Parser, typ: Compiler.FunctionType) Error!usize {
-        var compiler = try Compiler.init(self.vm, self.current_compiler, typ);
+        var compiler = try Compiler.init(self.vm, self.compiler, typ);
         defer compiler.deinit();
 
         try self.startCompiler(&compiler);
@@ -852,10 +963,10 @@ pub const Parser = struct {
         try self.consume(.left_paren, "Expect '(' after function name.");
         if (!self.check(.right_paren)) {
             while (true) {
-                if (self.current_compiler.function.arity >= 255) {
+                if (self.compiler.function.arity >= 255) {
                     try self.errorAtCurrent("Can't have more than 255 parameters.");
                 } else {
-                    self.current_compiler.function.arity += 1;
+                    self.compiler.function.arity += 1;
                 }
 
                 const constant = try self.parseVariable(.initialized, "Expect parameter name.");
@@ -892,6 +1003,15 @@ pub const Parser = struct {
         return self.emitOpCode(.{ .loop = .{ .offset = @truncate(u16, offset) } });
     }
 
+    fn emitReturn(self: *Parser) Error!usize {
+        if (self.compiler.function_type == .initializer) {
+            _ = try self.emitOpCode(.{ .get_local = .{ .index = 0 } });
+        } else {
+            _ = try self.emitOpCode(.nil);
+        }
+        return self.emitOpCode(.@"return");
+    }
+
     fn patchJump(self: *Parser, jump_instruction_loc: usize) File.WriteError!void {
         const offset = self.currentChunk().code.items.len - jump_instruction_loc - 3;
 
@@ -902,7 +1022,7 @@ pub const Parser = struct {
 
     fn stringConstant(self: *Parser, bytes: []const u8) Allocator.Error!usize {
         if (self
-            .current_compiler
+            .compiler
             .constant_strings
             .getAdapted(bytes, Object.String.SliceContext{})) |index|
         {
@@ -915,7 +1035,7 @@ pub const Parser = struct {
         const index = try self.currentChunk().addConstant(identifier);
         _ = self.vm.stack.pop();
 
-        try self.current_compiler.constant_strings.put(identifier, index);
+        try self.compiler.constant_strings.put(identifier, index);
         return index;
     }
 

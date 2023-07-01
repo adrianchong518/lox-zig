@@ -6,6 +6,7 @@ const Value = @import("value.zig").Value;
 
 pub const OpCodeTag = enum(u8) {
     call,
+    invoke,
     @"return",
 
     constant,
@@ -25,6 +26,10 @@ pub const OpCodeTag = enum(u8) {
     set_property,
 
     class,
+    method,
+    inherit,
+    get_super,
+    super_invoke,
 
     pop,
     close_upvalue,
@@ -55,6 +60,7 @@ pub const OpCodeTag = enum(u8) {
 
 pub const OpCode = union(OpCodeTag) {
     call: struct { arg_count: u8 },
+    invoke: struct { arg_count: u8, index: usize },
     @"return",
 
     constant: struct { index: usize },
@@ -74,6 +80,10 @@ pub const OpCode = union(OpCodeTag) {
     set_property: struct { index: usize },
 
     class: struct { index: usize },
+    method: struct { index: usize },
+    inherit,
+    get_super: struct { index: usize },
+    super_invoke: struct { arg_count: u8, index: usize },
 
     pop,
     close_upvalue,
@@ -156,6 +166,10 @@ pub const Chunk = struct {
         const instruction = self.next(offset);
         return switch (@intToEnum(OpCodeTag, instruction)) {
             .call => .{ .call = .{ .arg_count = self.next(offset) } },
+            .invoke => .{ .invoke = .{
+                .arg_count = self.next(offset),
+                .index = self.nextUsize(offset),
+            } },
             .@"return" => .@"return",
 
             .constant => .{ .constant = .{ .index = self.nextUsize(offset) } },
@@ -175,6 +189,13 @@ pub const Chunk = struct {
             .set_property => .{ .set_property = .{ .index = self.nextUsize(offset) } },
 
             .class => .{ .class = .{ .index = self.nextUsize(offset) } },
+            .method => .{ .method = .{ .index = self.nextUsize(offset) } },
+            .inherit => .inherit,
+            .get_super => .{ .get_super = .{ .index = self.nextUsize(offset) } },
+            .super_invoke => .{ .super_invoke = .{
+                .arg_count = self.next(offset),
+                .index = self.nextUsize(offset),
+            } },
 
             .pop => .pop,
             .close_upvalue => .close_upvalue,
@@ -249,7 +270,11 @@ pub const Chunk = struct {
         const loc = try self.write(@enumToInt(op_code), line);
 
         switch (op_code) {
-            .call => |op| _ = try self.write(op.arg_count, line),
+            .call => |op| _ = try self.writeInt(op.arg_count, line),
+            .invoke => |op| {
+                _ = try self.writeInt(op.arg_count, line);
+                _ = try self.writeInt(op.index, line);
+            },
 
             .constant => |op| try self.writeInt(op.index, line),
             .closure => |op| try self.writeInt(op.index, line),
@@ -268,6 +293,12 @@ pub const Chunk = struct {
             .set_property => |op| try self.writeInt(op.index, line),
 
             .class => |op| try self.writeInt(op.index, line),
+            .method => |op| try self.writeInt(op.index, line),
+            .get_super => |op| try self.writeInt(op.index, line),
+            .super_invoke => |op| {
+                _ = try self.writeInt(op.arg_count, line);
+                _ = try self.writeInt(op.index, line);
+            },
 
             .jump => |op| try self.writeInt(op.offset, line),
             .jump_if_false => |op| try self.writeInt(op.offset, line),
@@ -279,11 +310,12 @@ pub const Chunk = struct {
         return loc;
     }
 
-    fn writeInt(self: *Chunk, offset: anytype, line: usize) Allocator.Error!void {
-        switch (@TypeOf(offset)) {
-            usize => try self.writeUsize(offset, line),
-            u16 => try self.writeU16(offset, line),
-            else => @compileError("Cannot write offset of type: " ++ @typeName(@TypeOf(offset))),
+    fn writeInt(self: *Chunk, int: anytype, line: usize) Allocator.Error!void {
+        switch (@TypeOf(int)) {
+            usize => try self.writeUsize(int, line),
+            u16 => try self.writeU16(int, line),
+            u8 => _ = try self.write(int, line),
+            else => @compileError("Cannot write offset of type: " ++ @typeName(@TypeOf(int))),
         }
     }
 
